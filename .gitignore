@@ -48,7 +48,6 @@ dist/
 
 # IDE & Editor Metadata
 .gemini/
-.agent/
 .vscode/
 .idea/
 .DS_Store
