@@ -1,0 +1,55 @@
+# --- PredictIQ GitIgnore ---
+
+# Secrets & Config
+.env
+*.pem
+*.key
+kalshi_api.txt
+
+# Data & Lakehouse (The "North Star" is to keep these local)
+data/
+*.parquet
+*.crc
+*.duckdb
+*.duckdb.wal
+spark-warehouse/
+_delta_log/
+
+# Temporary / Scratch Files
+tmp/
+test.json
+test.py
+inspect_parquet.py
+fast_peek.py
+spark_test.py
+peek_bronze.py
+temp_*.py
+
+# Ingestion Metadata / Logs
+logs/
+.system_generated/
+*.log
+
+# Scripts for Testing (Native Ingestion Drafts)
+native_ingestion/flat_test_*.py
+native_ingestion/debug_*.py
+
+# Python Environment
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+.env/
+build/
+dist/
+*.egg-info/
+
+# IDE & Editor Metadata
+.gemini/
+.agent/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
