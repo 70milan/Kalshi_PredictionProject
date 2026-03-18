@@ -1,6 +1,6 @@
-# PredictIQ: Political & Economic Intelligence Lakehouse
+# Kalshi Prediction Markets : Political & Economic Intelligence Lakehouse
 
-PredictIQ is a sophisticated data engineering platform designed to ingest, refine, and analyze high-signal political and economic data. Use this tool to bridge the gap between **Real-World Narrative** (News/GDELT) and **Market Conviction** (Kalshi Prediction Markets).
+Kalshi Prediction Markets is a sophisticated data engineering platform designed to ingest, refine, and analyze high-signal political and economic data. Use this tool to bridge the gap between **Real-World Narrative** (News/GDELT) and **Market Conviction** (Kalshi Prediction Markets).
 
 ---
 
