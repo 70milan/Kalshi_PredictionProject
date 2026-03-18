@@ -45,10 +45,16 @@ env/
 build/
 dist/
 *.egg-info/
+node_modules/
+requirements-*.txt
 
 # IDE & Editor Metadata
 .gemini/
+.agent/
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
+*.bak
+*.tmp
+git_status_output.txt
