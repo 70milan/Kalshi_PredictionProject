@@ -24,6 +24,8 @@ fast_peek.py
 spark_test.py
 peek_bronze.py
 temp_*.py
+tmp_schema_check.py
+create_objects.sql  
 
 # Ingestion Metadata / Logs
 logs/

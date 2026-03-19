@@ -155,6 +155,7 @@ def fetch_all_political_markets(series_tickers: list[str]) -> list[dict]:
             for m in markets:
                 m["ingested_at"]   = ingested_at
                 m["series_ticker"] = ticker
+                m["status_pulled"] = "open"
             all_markets.extend(markets)
             print(f"   [{i:>3}/{len(series_tickers)}] {ticker:<30} → {len(markets)} markets")
 

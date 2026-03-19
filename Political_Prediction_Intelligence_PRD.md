@@ -101,8 +101,8 @@ GDELT is the primary big data source. It drops a new file every 15 minutes, glob
 | • Set up local project structure: /data/bronze, /silver, /gold folders |
 | • Install PySpark + Delta Lake locally, confirm Spark session boots |
 | • Write Kalshi API poller — fetch open markets every 15 mins, land to Bronze Delta table |
-| • Write GDELT daily downloader — fetch CSV drops, land to Bronze Delta table |
-| • Write NewsAPI scraper — fetch headlines, land to Bronze |
+| • Write GDELT 15-min poller — fetch CSV drops, filter to political events, land to Bronze |
+| • Write RSS Poller — fetch real-time headlines from Reuters/AP (replaces NewsAPI to avoid 24hr lag) |
 | • Confirm all three Bronze tables are queryable via DuckDB |
 | • Set up Prefect flow to schedule all three ingestion jobs |
 
@@ -111,8 +111,8 @@ GDELT is the primary big data source. It drops a new file every 15 minutes, glob
 | **Phase 2: ETL Pipeline — Silver Layer** | Week 3–4 |
 | • Bronze → Silver: normalize Kalshi markets into relational schema (market\_id, title, category, close\_date, current\_odds) |
 | • Bronze → Silver: build odds\_history table — one row per poll per market (time-series) |
-| • Bronze → Silver: parse GDELT CSV — extract event codes, actor names, tone scores, geographic tags |
-| • Bronze → Silver: clean NewsAPI headlines — deduplicate, extract entities (spaCy or simple regex) |
+| • Bronze → Silver: parse GDELT CSV — implement rolling 90-day historical window for baselining |
+| • Bronze → Silver: clean RSS headlines — deduplicate, extract entities (spaCy or simple regex) |
 | • Add schema validation and bad-record quarantine to each Silver transform |
 | • All Silver tables joinable on market\_id or event\_date — test joins in DuckDB |
 
