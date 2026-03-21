@@ -5,7 +5,7 @@
 # 1) BUILD THE IMAGE
 # Run this once, or whenever you change the Dockerfile / requirements.txt
 # ---------------------------------------------------------
-docker compose build
+docker compose up --build
 
 # ---------------------------------------------------------
 # 2) RUN GDELT INGESTION
@@ -33,6 +33,14 @@ docker compose run spark-app python3 ingestion/kalshi_markets_historical.py
 # Schedule this to run once per day at ~11:59 PM via Prefect.
 # ---------------------------------------------------------
 docker compose run spark-app python3 ingestion/kalshi_daily_settlement.py
+
+
+# ---------------------------------------------------------
+# 6) RUN NEWS INGESTION (NYT + REUTERS)
+# Fetches the latest political headlines from both sources
+# ---------------------------------------------------------
+docker compose run spark-app python3 ingestion/nyt_news_ingest.py
+docker compose run spark-app python3 ingestion/reuters_news_ingest.py
 
 # ---------------------------------------------------------
 # NOTE:

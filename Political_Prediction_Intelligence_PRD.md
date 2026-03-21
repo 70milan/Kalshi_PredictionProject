@@ -4,8 +4,6 @@
 
 Product Requirements Document | v1.0
 
-Milan Barot • 2026 • Portfolio + Personal Use
-
 # **1. Project Overview**
 
 A fully automated, end-to-end data + AI platform that monitors Kalshi prediction markets on political and world events, ingests large-scale news data from GDELT, detects mispriced markets using a scoring engine, and surfaces LLM-generated research briefs to a personal dashboard for semi-automated bet approval.
