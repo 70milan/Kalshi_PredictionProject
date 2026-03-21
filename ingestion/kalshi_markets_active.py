@@ -22,8 +22,8 @@ BASE_URL   = "https://api.elections.kalshi.com"
 MARKETS_ENDPOINT = "/trade-api/v2/markets"
 SERIES_ENDPOINT  = "/trade-api/v2/series"
 
-# Always write to project root — not script's local folder
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Docker: /app is the project root (volume-mounted)
+PROJECT_ROOT = "/app"
 BRONZE_DIR   = os.path.join(PROJECT_ROOT, "data", "bronze", "kalshi_markets", "open")
 
 # Categories to pull from /series endpoint

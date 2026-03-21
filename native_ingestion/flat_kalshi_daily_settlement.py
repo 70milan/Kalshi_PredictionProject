@@ -4,14 +4,21 @@ import time
 import base64
 import duckdb
 import pandas as pd
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives import serialization
 
 # ─────────────────────────────────────────────
-# CONFIG
+# DAILY INCREMENTAL SETTLEMENT SWEEPER
+# Run once per day (e.g. 11:59 PM via Prefect).
+# Fetches markets that settled IN THE LAST 24 HOURS
+# and appends them to the settled/ Bronze folder.
+#
+# Fills the CDC gap left by the one-time historical
+# backfill — any market that was open today and settled
+# today will be captured by this script.
 # ─────────────────────────────────────────────
 
 load_dotenv()
@@ -24,9 +31,10 @@ SERIES_ENDPOINT  = "/trade-api/v2/series"
 
 # Always write to project root — not script's local folder
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BRONZE_DIR   = os.path.join(PROJECT_ROOT, "data", "bronze", "kalshi_markets", "open")
+SETTLED_DIR  = os.path.join(PROJECT_ROOT, "data", "bronze", "kalshi_markets", "settled")
+CLOSED_DIR   = os.path.join(PROJECT_ROOT, "data", "bronze", "kalshi_markets", "closed")
 
-# Categories to pull from /series endpoint
+# Only pull from political series
 TARGET_CATEGORIES = {"Politics"}
 
 # Text exclusions — catch mislabeled political series
@@ -39,7 +47,7 @@ TEXT_EXCLUDE = [
     "snow", "weather", "temperature", "rainfall",
 ]
 
-MAX_PAGES_PER_SERIES = 10   # 10 × 200 = 2,000 per series max
+MAX_PAGES_PER_SERIES = 20  # Daily run: should need at most 1-2 pages per series
 PAGE_SIZE            = 200
 
 
@@ -70,36 +78,35 @@ def get(path: str, params: dict = None, max_retries: int = 5) -> dict:
                 params=params or {},
                 timeout=10,
             )
-            
-            # Handle 429 Rate Limit explicitly
+
             if response.status_code == 429:
                 wait_time = (2 ** attempt) * 10
                 print(f"    ⚠️  Rate limited (429). Waiting {wait_time}s before retry {attempt + 1}/{max_retries}...")
                 time.sleep(wait_time)
                 continue
-                
+
             response.raise_for_status()
             return response.json()
-            
+
         except requests.exceptions.RequestException as e:
             print(f"    ❌ Request failed: {e}")
             if attempt == max_retries - 1:
                 return {}
             time.sleep(5)
-            
+
     return {}
 
 
 # ─────────────────────────────────────────────
-# STEP 1 — GET OPEN POLITICAL SERIES
+# STEP 1 — GET ALL POLITICAL SERIES (OPEN + RESOLVED)
 # ─────────────────────────────────────────────
 
 def fetch_political_series() -> list:
     """
-    Fetch only open series — status=open skips resolved/dead series.
-    Filter to Politics category only.
+    Fetch all series — no status filter — so we catch
+    newly resolved series that settled today.
     """
-    data   = get(SERIES_ENDPOINT, params={"status": "open"})
+    data   = get(SERIES_ENDPOINT)
     series = data.get("series", [])
 
     political = []
@@ -115,15 +122,20 @@ def fetch_political_series() -> list:
 
         political.append(ticker)
 
-    print(f"   Series found: {len(series)} total → {len(political)} political")
+    print(f"   Political series found: {len(political)}")
     return political
 
 
 # ─────────────────────────────────────────────
-# STEP 2 — FETCH OPEN MARKETS PER SERIES
+# STEP 2 — FETCH RECENT MARKETS FOR ONE SERIES + STATUS
+# Only returns markets settled/closed within cutoff_ts
 # ─────────────────────────────────────────────
 
-def fetch_markets_for_series(series_ticker: str) -> list:
+def fetch_recent_markets(series_ticker: str, status: str, cutoff_ts: str) -> list:
+    """
+    Fetch recently settled/closed markets for a given series.
+    Paginates until we see markets older than the 24-hour cutoff.
+    """
     markets    = []
     cursor     = None
     page_count = 0
@@ -135,7 +147,7 @@ def fetch_markets_for_series(series_ticker: str) -> list:
 
         params = {
             "limit":         PAGE_SIZE,
-            "status":        "open",
+            "status":        status,
             "series_ticker": series_ticker,
         }
         if cursor:
@@ -147,7 +159,26 @@ def fetch_markets_for_series(series_ticker: str) -> list:
         if not batch:
             break
 
-        markets.extend(batch)
+        new_markets = []
+        stop_early  = False
+
+        for m in batch:
+            # Use settlement_ts or close_time to determine recency
+            ts_str = (
+                m.get("settlement_ts") or
+                m.get("close_time")    or
+                ""
+            )
+            if ts_str and ts_str < cutoff_ts:
+                # This market and all subsequent are older than our window
+                stop_early = True
+                break
+            new_markets.append(m)
+
+        markets.extend(new_markets)
+
+        if stop_early:
+            break
 
         cursor = data.get("cursor")
         if not cursor:
@@ -158,24 +189,50 @@ def fetch_markets_for_series(series_ticker: str) -> list:
     return markets
 
 
-def fetch_all_political_markets(series_tickers: list) -> list:
-    all_markets = []
+# ─────────────────────────────────────────────
+# STEP 3 — SWEEP ALL SERIES FOR RECENT SETTLEMENTS
+# ─────────────────────────────────────────────
+
+def fetch_todays_settlements(series_tickers: list, cutoff_ts: str) -> tuple:
+    """
+    Single pass through all political series.
+    Captures anything that settled/closed in the last 24 hours.
+    """
+    all_closed  = []
+    all_settled = []
     ingested_at = datetime.now(timezone.utc).isoformat()
 
-    for i, ticker in enumerate(series_tickers, 1):
-        markets = fetch_markets_for_series(ticker)
+    print(f"\n   Sweeping {len(series_tickers)} series for markets settled after {cutoff_ts[:10]}...\n")
 
-        if markets:
-            for m in markets:
+    for i, ticker in enumerate(series_tickers, 1):
+
+        closed = fetch_recent_markets(ticker, "closed", cutoff_ts)
+        if closed:
+            for m in closed:
                 m["ingested_at"]   = ingested_at
                 m["series_ticker"] = ticker
-                m["status_pulled"] = "open"
-            all_markets.extend(markets)
-            print(f"   [{i:>3}/{len(series_tickers)}] {ticker:<30} → {len(markets)} markets")
+                m["status_pulled"] = "closed"
+            all_closed.extend(closed)
+
+        settled = fetch_recent_markets(ticker, "settled", cutoff_ts)
+        if settled:
+            for m in settled:
+                m["ingested_at"]   = ingested_at
+                m["series_ticker"] = ticker
+                m["status_pulled"] = "settled"
+            all_settled.extend(settled)
+
+        if closed or settled:
+            closed_label  = f"{len(closed)} closed"   if closed  else "—"
+            settled_label = f"{len(settled)} settled"  if settled else "—"
+            print(f"\r   [{i:>4}/{len(series_tickers)}] {ticker:<35} | {closed_label:<12} | {settled_label}          ", flush=True)
+
+        else:
+            print(f"\r   [{i:>4}/{len(series_tickers)}] {ticker:<35} | checking...          ", end="", flush=True)
 
         time.sleep(0.3)
 
-    return all_markets
+    return all_closed, all_settled
 
 
 # ─────────────────────────────────────────────
@@ -183,6 +240,7 @@ def fetch_all_political_markets(series_tickers: list) -> list:
 # ─────────────────────────────────────────────
 
 def flatten_market(m: dict) -> dict:
+    """Serialize nested dicts/lists — Parquet can't handle them."""
     return {
         k: (str(v) if isinstance(v, (dict, list)) else v)
         for k, v in m.items()
@@ -190,47 +248,37 @@ def flatten_market(m: dict) -> dict:
 
 
 # ─────────────────────────────────────────────
-# SAVE TO BRONZE
+# SAVE — APPEND TO EXISTING SETTLED/CLOSED FOLDERS
 # ─────────────────────────────────────────────
 
-def save_to_bronze(markets: list):
+def save_incremental(markets: list, output_dir: str, status: str) -> str:
     """
-    Two files per run:
-      latest.parquet              — overwritten, always current
-      markets_TIMESTAMP.parquet   — append-only history, never overwritten
+    Append today's settlements to the existing Bronze folder.
+    Each daily run creates a new timestamped file — never overwrites.
+    The DuckDB wildcard view (*.parquet) picks it up automatically.
     """
-    os.makedirs(BRONZE_DIR, exist_ok=True)
+    if not markets:
+        print(f"   No new [{status}] markets to save.")
+        return ""
+
+    os.makedirs(output_dir, exist_ok=True)
 
     flat = [flatten_market(m) for m in markets]
     df   = pd.DataFrame(flat)
 
-    ts           = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    latest_path  = os.path.join(BRONZE_DIR, "latest.parquet").replace("\\", "/")
-    history_path = os.path.join(BRONZE_DIR, f"markets_{ts}.parquet").replace("\\", "/")
+    ts       = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    filepath = os.path.join(output_dir, f"daily_{status}_{ts}.parquet").replace("\\", "/")
 
     conn = duckdb.connect()
-    conn.execute(f"COPY (SELECT * FROM df) TO '{latest_path}'  (FORMAT 'PARQUET')")
-    conn.execute(f"COPY (SELECT * FROM df) TO '{history_path}' (FORMAT 'PARQUET')")
+    conn.execute(f"COPY (SELECT * FROM df) TO '{filepath}' (FORMAT 'PARQUET')")
     conn.close()
 
-    print(f"   Saved → {len(flat)} rows, {len(df.columns)} columns")
-    print(f"   Latest   : latest.parquet")
-    print(f"   Snapshot : markets_{ts}.parquet")
+    print(f"\n   Saved [{status}]:")
+    print(f"   Path    → {filepath}")
+    print(f"   Rows    → {len(flat)}")
+    print(f"   Columns → {len(df.columns)}")
 
-
-# ─────────────────────────────────────────────
-# PREVIEW
-# ─────────────────────────────────────────────
-
-def preview(markets: list, n: int = 5):
-    print(f"\n   {'SERIES':<20} {'TICKER':<35} {'YES_BID':>8}  TITLE")
-    print(f"   {'-'*20} {'-'*35} {'-'*8}  {'-'*40}")
-    for m in markets[:n]:
-        series  = (m.get("series_ticker",   "") or "")[:20]
-        ticker  = (m.get("ticker",          "") or "")[:35]
-        title   = (m.get("title",           "") or "")[:60]
-        yes_bid =  m.get("yes_bid_dollars", "?")
-        print(f"   {series:<20} {ticker:<35} {str(yes_bid):>8}  {title}")
+    return filepath
 
 
 # ─────────────────────────────────────────────
@@ -238,37 +286,51 @@ def preview(markets: list, n: int = 5):
 # ─────────────────────────────────────────────
 
 def main():
+    run_ts   = datetime.now(timezone.utc)
+    # Look back 24 hours — catches anything that resolved today
+    cutoff   = (run_ts - timedelta(hours=24)).isoformat()
+
     print("=" * 65)
-    print("PredictIQ — Kalshi Active Markets Poll")
-    print(f"Run time : {datetime.now(timezone.utc).isoformat()}")
-    print(f"Output   : {BRONZE_DIR}")
+    print("PredictIQ — Kalshi Daily Settlement Sweeper")
+    print(f"Run time  : {run_ts.isoformat()}")
+    print(f"Cutoff    : {cutoff}  (last 24 hours)")
+    print(f"Settled   : {SETTLED_DIR}")
+    print(f"Closed    : {CLOSED_DIR}")
     print("=" * 65)
 
-    # 1. Get open political series
-    print("\n📋 Fetching open political series...")
+    # 1. Get all political series
+    print("\n   Fetching political series...")
     series_tickers = fetch_political_series()
     if not series_tickers:
-        print("⚠️  No political series found.")
+        print("   No political series found. Check TARGET_CATEGORIES.")
         return
 
-    # 2. Fetch open markets
-    print(f"\n📡 Fetching open markets...")
-    all_markets = fetch_all_political_markets(series_tickers)
-    print(f"\n✅ Total markets fetched: {len(all_markets)}")
-    if not all_markets:
-        print("⚠️  No open markets found.")
+    # 2. Sweep for today's settlements
+    closed_markets, settled_markets = fetch_todays_settlements(series_tickers, cutoff)
+
+    total = len(closed_markets) + len(settled_markets)
+    print(f"\n   Sweep complete — {len(closed_markets)} closed + {len(settled_markets)} settled found today.")
+
+    if total == 0:
+        print("   Nothing new settled in the last 24 hours. Nothing to save.")
+        print("=" * 65)
         return
 
-    # 3. Save
-    print(f"\n💾 Saving to Bronze...")
-    save_to_bronze(all_markets)
+    # 3. Save each status to its own folder
+    print(f"\n{'='*65}")
+    save_incremental(closed_markets,  CLOSED_DIR,  "closed")
+    save_incremental(settled_markets, SETTLED_DIR, "settled")
 
-    # 4. Preview
-    print(f"\n🔍 Sample:")
-    preview(all_markets)
-
-    print("\n✅ Done.")
-    print("=" * 65)
+    # 4. Summary
+    print(f"\n{'='*65}")
+    print(f"   Daily settlement sweep complete.")
+    print(f"   Closed  : {len(closed_markets):>5} new markets")
+    print(f"   Settled : {len(settled_markets):>5} new markets")
+    print(f"   Total   : {total:>5}")
+    print(f"\n   These will automatically appear in your DuckDB views:")
+    print(f"   - kalshi_closed  (via closed/*.parquet)")
+    print(f"   - kalshi_settled (via settled/*.parquet)")
+    print(f"{'='*65}")
 
 
 if __name__ == "__main__":

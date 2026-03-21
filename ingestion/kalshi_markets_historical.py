@@ -26,8 +26,8 @@ BASE_URL   = "https://api.elections.kalshi.com"
 MARKETS_ENDPOINT = "/trade-api/v2/markets"
 SERIES_ENDPOINT  = "/trade-api/v2/series"
 
-# ── Always write to project root /data ──
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Docker: /app is the project root (volume-mounted)
+PROJECT_ROOT = "/app"
 CLOSED_DIR   = os.path.join(PROJECT_ROOT, "data", "bronze", "kalshi_markets", "closed")
 SETTLED_DIR  = os.path.join(PROJECT_ROOT, "data", "bronze", "kalshi_markets", "settled")
 

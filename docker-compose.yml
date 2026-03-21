@@ -4,8 +4,10 @@ services:
     container_name: prediction_intelligence_app
     volumes:
       - .:/app
+    env_file:
+      - .env
     environment:
       - PYSPARK_PYTHON=python3
       - PYSPARK_DRIVER_PYTHON=python3
-    entrypoint: ["tail", "-f", "/dev/null"]
+    command: ["tail", "-f", "/dev/null"]
     working_dir: /app
