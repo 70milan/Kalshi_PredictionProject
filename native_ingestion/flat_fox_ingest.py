@@ -9,11 +9,11 @@ from datetime import datetime, timezone
 # CONFIG
 # ─────────────────────────────────────────────
 
-REUTERS_POLITICS_RSS = "https://news.google.com/rss/search?q=site:reuters.com+politics&hl=en-US&gl=US&ceid=US:en"
+FOX_NEWS_POLITICS_RSS = "http://feeds.foxnews.com/foxnews/politics"
 
 # Always write to project root — two levels up from script location
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BRONZE_DIR   = os.path.join(PROJECT_ROOT, "data", "bronze", "reuters")
+BRONZE_DIR   = os.path.join(PROJECT_ROOT, "data", "bronze", "foxnews")
 SEEN_URLS_FILE = os.path.join(BRONZE_DIR, ".seen_urls")
 
 # ─────────────────────────────────────────────
@@ -40,8 +40,8 @@ def mark_as_seen(urls):
 
 def fetch_and_scrape():
     """Fetches RSS feed and scrapes new articles."""
-    print(f"📡 Fetching Reuters RSS (Google News Fallback): {REUTERS_POLITICS_RSS}")
-    feed = feedparser.parse(REUTERS_POLITICS_RSS)
+    print(f"Fetching Fox News RSS: {FOX_NEWS_POLITICS_RSS}")
+    feed = feedparser.parse(FOX_NEWS_POLITICS_RSS)
     
     # DEBUG: Check feed status
     status = getattr(feed, 'status', 'N/A')
@@ -68,7 +68,7 @@ def fetch_and_scrape():
         if link in seen_urls:
             continue
             
-        print(f"📄 New Article: {entry.title}")
+        print(f"New Article: {entry.title}")
         
         # Scrape full content
         scraped_text = None
@@ -81,13 +81,13 @@ def fetch_and_scrape():
                 if scraped_text:
                     is_scraped = True
         except Exception as e:
-            print(f"   ⚠️ Scraping failed for {link}: {e}")
+            print(f"   Scraping failed for {link}: {e}")
             
         # Fallback to summary if scraping fails or is empty
         content = scraped_text if is_scraped else entry.get("summary", "")
         
         new_items.append({
-            "source":      "Reuters",
+            "source":      "Fox News",
             "title":       entry.title,
             "link":        link,
             "published_at": entry.get("published", ""),
@@ -103,22 +103,24 @@ def fetch_and_scrape():
 def save_to_bronze(items):
     """Saves any new items to Bronze Parquet via DuckDB."""
     if not items:
-        print("⏭️  No new articles found.")
+        print("No new articles found.")
         return False
         
     os.makedirs(BRONZE_DIR, exist_ok=True)
     df = pd.DataFrame(items)
     
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    filepath = os.path.join(BRONZE_DIR, f"reuters_{ts}.parquet").replace("\\", "/")
+    filepath = os.path.join(BRONZE_DIR, f"foxnews_{ts}.parquet").replace("\\", "/")
+    latest_path = os.path.join(BRONZE_DIR, "latest.parquet").replace("\\", "/")
     
     conn = duckdb.connect()
     try:
         conn.execute(f"COPY (SELECT * FROM df) TO '{filepath}' (FORMAT 'PARQUET')")
-        print(f"💾 Saved {len(items)} articles to {filepath}")
+        conn.execute(f"COPY (SELECT * FROM df) TO '{latest_path}' (FORMAT 'PARQUET')")
+        print(f"Saved {len(items)} articles to {filepath} and latest.parquet")
         return True
     except Exception as e:
-        print(f"❌ Failed to save to Parquet: {e}")
+        print(f"Failed to save to Parquet: {e}")
         return False
     finally:
         conn.close()
@@ -129,7 +131,7 @@ def save_to_bronze(items):
 
 def main():
     print("=" * 65)
-    print("PredictIQ — Reuters RSS Ingestion")
+    print("PredictIQ — Fox News RSS Ingestion")
     print(f"Run time : {datetime.now(timezone.utc).isoformat()}")
     print("=" * 65)
 
@@ -138,9 +140,9 @@ def main():
     if items:
         if save_to_bronze(items):
             mark_as_seen(urls)
-            print(f"✅ Successfully ingested {len(items)} new articles.")
+            print(f"Successfully ingested {len(items)} new articles.")
     else:
-        print("☕ Everything is up to date.")
+        print("Everything is up to date.")
 
     print("=" * 65)
 

@@ -1,0 +1,680 @@
+=== 1. Directory Tree ===
++-- .agent/
+    +-- skills/
+        +-- brainstorm/
+            +-- SKILL.md (5.07 KB)
+        +-- data_engineer_pipeline_expert/
+            +-- SKILL.md (6.82 KB)
+        +-- debugger/
+            +-- SKILL.md (1.31 KB)
+        +-- kalshi-api-debug/
+            +-- SKILL.md (10.12 KB)
+        +-- project-goal-validator/
+            +-- SKILL.md (2.43 KB)
+        +-- state-audit/
+            +-- SKILL.md (2.12 KB)
+    +-- workflows/
+        +-- pre-response-checklist.md (4.19 KB)
++-- .env (1.98 KB)
++-- .gitignore (0.77 KB)
++-- artifacts/
+    +-- Data Definition/
+        +-- predictiq_data_dictionary.md (4.91 KB)
+        +-- schema_definitions/
+            +-- ingestion_catalog.md (1.60 KB)
+            +-- ingestion_catalog.md.metadata.json (0.14 KB)
+            +-- ingestion_catalog.md.resolved (1.69 KB)
+            +-- ingestion_catalog.md.resolved.0 (1.29 KB)
+            +-- ingestion_catalog.md.resolved.1 (1.69 KB)
+            +-- predictiq_data_dictionary.md (4.81 KB)
+            +-- predictiq_data_dictionary.md.metadata.json (0.23 KB)
+            +-- predictiq_data_dictionary.md.resolved (4.91 KB)
+            +-- predictiq_data_dictionary.md.resolved.0 (4.91 KB)
+            +-- schema_gdelt_events.md (1.70 KB)
+            +-- schema_gdelt_events.md.metadata.json (0.16 KB)
+            +-- schema_gdelt_events.md.resolved (1.79 KB)
+            +-- schema_gdelt_events.md.resolved.0 (1.79 KB)
+            +-- schema_gdelt_gkg.md (1.08 KB)
+            +-- schema_gdelt_gkg.md.metadata.json (0.17 KB)
+            +-- schema_gdelt_gkg.md.resolved (1.17 KB)
+            +-- schema_gdelt_gkg.md.resolved.0 (1.17 KB)
+            +-- schema_kalshi_markets.md (1.35 KB)
+            +-- schema_kalshi_markets.md.metadata.json (0.16 KB)
+            +-- schema_kalshi_markets.md.resolved (1.56 KB)
+            +-- schema_kalshi_markets.md.resolved.0 (1.56 KB)
+            +-- schema_news_rss.md (0.86 KB)
+            +-- schema_news_rss.md.metadata.json (0.16 KB)
+            +-- schema_news_rss.md.resolved (1.06 KB)
+            +-- schema_news_rss.md.resolved.0 (1.06 KB)
+            +-- schema_reference_data.md (1.22 KB)
+            +-- schema_reference_data.md.metadata.json (0.17 KB)
+            +-- schema_reference_data.md.resolved (1.83 KB)
+            +-- schema_reference_data.md.resolved.0 (1.83 KB)
+        +-- schema_reference_data.md (1.83 KB)
+    +-- Political_Prediction_Intelligence_PRD.md (12.36 KB)
+    +-- PredictIQ — Silver Layer Planning B.txt (5.83 KB)
+    +-- PredictIQ_Full_Context_v2.docx (19.89 KB)
+    +-- PredictIQ_Full_Context_v3.docx (21.65 KB)
+    +-- PredictIQ_Project_Context_v4 (2.18 KB)
+    +-- PredictIQ_Session_Continuation.docx (16.01 KB)
++-- audit_script.py (6.29 KB)
++-- create_objects.sql (1.67 KB)
++-- data/
+    +-- bronze/
+        +-- gdelt/
+            +-- gdelt_events/
+                +-- .last_url (0.06 KB)
+                +-- gdelt_20260324_181357.parquet (69.27 KB)
+                +-- latest.parquet (69.27 KB)
+            +-- gdelt_gkg/
+                +-- .last_url (0.06 KB)
+                +-- gkg_20260324_181629.parquet (126.30 KB)
+        +-- kalshi_markets/
+            +-- closed/
+                +-- historical_closed_20260318_042426.parquet (25.75 KB)
+                +-- historical_closed_20260320_184231.parquet (19.94 KB)
+            +-- open/
+                +-- latest.parquet (628.75 KB)
+                +-- markets_20260318_063153.parquet (609.82 KB)
+                +-- markets_20260320_002709.parquet (614.56 KB)
+                +-- markets_20260320_190329.parquet (628.75 KB)
+            +-- settled/
+                +-- daily_settled_20260320_222504.parquet (18.88 KB)
+                +-- historical_settled_20260318_042427.parquet (1439.24 KB)
+                +-- historical_settled_20260320_184232.parquet (1363.28 KB)
+        +-- nyt/
+            +-- .seen_urls (3.36 KB)
+            +-- nyt_20260321_032252.parquet (10.42 KB)
+            +-- nyt_20260321_042026.parquet (10.24 KB)
+            +-- nyt_20260322_195434.parquet (10.71 KB)
+        +-- reuters/
+            +-- .seen_urls (30.76 KB)
+            +-- reuters_20260324_215406.parquet (115.52 KB)
+    +-- reference/
++-- docker-compose.yml (0.28 KB)
++-- Dockerfile (0.61 KB)
++-- fast_peek.py (0.98 KB)
++-- ingestion/
+    +-- gdelt_events_ingest.py (8.04 KB)
+    +-- kalshi_daily_settlement.py (12.17 KB)
+    +-- kalshi_markets_active.py (9.66 KB)
+    +-- kalshi_markets_historical.py (14.39 KB)
+    +-- nyt_news_ingest.py (4.84 KB)
+    +-- reuters_news_ingest.py (4.96 KB)
+    +-- TDB_flat_kalshi_candlesticks.py (3.25 KB)
+    +-- test_kalshi_auth.py (4.97 KB)
++-- inspect_parquet.py (0.34 KB)
++-- kalshi_api.txt (1.64 KB)
++-- native_ingestion/
+    +-- flat_gdelt_gkg_ingest.py (6.95 KB)
+    +-- flat_kalshi_daily_settlement.py (12.24 KB)
+    +-- flat_kalshi_markets_active.py (9.72 KB)
+    +-- flat_kalshi_markets_historical.py (14.44 KB)
+    +-- flat_nyt_news_ingest.py (5.24 KB)
+    +-- flat_reuters_news_ingest.py (5.88 KB)
+    +-- gdelt_events_ingest.py (8.11 KB)
+    +-- list[str] (0.00 KB)
+    +-- TDB_flat_kalshi_candlesticks.py (3.25 KB)
++-- peek_bronze.py (1.26 KB)
++-- README.md (4.40 KB)
++-- README_docker.txt (2.40 KB)
++-- reference/
+    +-- cameo_actortypes.csv (0.26 KB)
+    +-- cameo_eventcodes.csv (0.33 KB)
+    +-- cameo_quadclass.csv (0.09 KB)
+    +-- fips_countries.csv (0.26 KB)
++-- requirements.txt (0.31 KB)
++-- spark_test.py (1.59 KB)
++-- test.json (2.78 KB)
++-- test_write_access.txt (0.03 KB)
++-- tmp_schema_check.py (0.68 KB)
++-- transformation/
+    +-- silver_gdelt_events_transform.py (3.00 KB)
+    +-- silver_gdelt_gkg_transform.py (2.43 KB)
+    +-- silver_kalshi_transform.py (1.88 KB)
+    +-- silver_news_transform.py (2.48 KB)
+
+=== 2. Scripts Inventory ===
+File: audit_script.py | Modified: 2026-03-31 19:56:27 | Functions: ['printf', 'print_tree', 'run_duckdb_query']
+File: fast_peek.py | Modified: 2026-03-16 20:20:08 | Functions: ['fast_peek']
+File: inspect_parquet.py | Modified: 2026-03-17 00:58:42 | Functions: []
+File: peek_bronze.py | Modified: 2026-03-16 20:20:47 | Functions: ['peek_delta_table_spark']
+File: spark_test.py | Modified: 2026-03-16 17:34:48 | Functions: ['test_spark_delta_docker']
+File: tmp_schema_check.py | Modified: 2026-03-19 19:11:53 | Functions: []
+File: ingestion\gdelt_events_ingest.py | Modified: 2026-03-24 13:48:56 | Functions: ['already_ingested', 'mark_ingested', 'fetch_latest_gdelt_url', 'download_and_parse_gdelt', 'filter_political_events', 'save_to_bronze', 'main']
+File: ingestion\kalshi_daily_settlement.py | Modified: 2026-03-20 17:31:11 | Functions: ['build_headers', 'get', 'fetch_political_series', 'fetch_recent_markets', 'fetch_todays_settlements', 'flatten_market', 'save_incremental', 'main']
+File: ingestion\kalshi_markets_active.py | Modified: 2026-03-20 14:18:14 | Functions: ['build_headers', 'get', 'fetch_political_series', 'fetch_markets_for_series', 'fetch_all_political_markets', 'flatten_market', 'save_to_bronze', 'preview', 'main']
+File: ingestion\kalshi_markets_historical.py | Modified: 2026-03-20 14:17:47 | Functions: ['build_headers', 'get', 'fetch_political_series', 'fetch_markets_for_series', 'fetch_all_historical', 'flatten_market', 'save_to_bronze', 'preview', 'verify_saved', 'main']
+File: ingestion\nyt_news_ingest.py | Modified: 2026-03-20 23:32:39 | Functions: ['get_seen_urls', 'mark_as_seen', 'fetch_and_scrape', 'save_to_bronze', 'main']
+File: ingestion\reuters_news_ingest.py | Modified: 2026-03-20 23:32:41 | Functions: ['get_seen_urls', 'mark_as_seen', 'fetch_and_scrape', 'save_to_bronze', 'main']
+File: ingestion\TDB_flat_kalshi_candlesticks.py | Modified: 2026-03-17 00:44:18 | Functions: []
+File: ingestion\test_kalshi_auth.py | Modified: 2026-03-24 18:27:33 | Functions: []
+File: native_ingestion\flat_gdelt_gkg_ingest.py | Modified: 2026-03-24 14:15:27 | Functions: ['already_ingested', 'mark_ingested', 'is_political', 'fetch_latest_gkg_url', 'download_and_parse_gkg', 'save_to_bronze', 'main']
+File: native_ingestion\flat_kalshi_daily_settlement.py | Modified: 2026-03-20 18:26:21 | Functions: ['build_headers', 'get', 'fetch_political_series', 'fetch_recent_markets', 'fetch_todays_settlements', 'flatten_market', 'save_incremental', 'main']
+File: native_ingestion\flat_kalshi_markets_active.py | Modified: 2026-03-20 14:20:16 | Functions: ['build_headers', 'get', 'fetch_political_series', 'fetch_markets_for_series', 'fetch_all_political_markets', 'flatten_market', 'save_to_bronze', 'preview', 'main']
+File: native_ingestion\flat_kalshi_markets_historical.py | Modified: 2026-03-20 14:20:18 | Functions: ['build_headers', 'get', 'fetch_political_series', 'fetch_markets_for_series', 'fetch_all_historical', 'flatten_market', 'save_to_bronze', 'preview', 'verify_saved', 'main']
+File: native_ingestion\flat_nyt_news_ingest.py | Modified: 2026-03-20 23:28:28 | Functions: ['get_seen_urls', 'mark_as_seen', 'fetch_and_scrape', 'save_to_bronze', 'main']
+File: native_ingestion\flat_reuters_news_ingest.py | Modified: 2026-03-24 17:51:37 | Functions: ['get_seen_urls', 'mark_as_seen', 'extract_href', 'resolve_google_url', 'fetch_and_scrape', 'save_to_bronze', 'main']
+File: native_ingestion\gdelt_events_ingest.py | Modified: 2026-03-24 13:48:50 | Functions: ['already_ingested', 'mark_ingested', 'fetch_latest_gdelt_url', 'download_and_parse_gdelt', 'filter_political_events', 'save_to_bronze', 'main']
+File: native_ingestion\TDB_flat_kalshi_candlesticks.py | Modified: 2026-03-17 00:44:18 | Functions: []
+File: transformation\silver_gdelt_events_transform.py | Modified: 2026-03-24 13:49:02 | Functions: []
+File: transformation\silver_gdelt_gkg_transform.py | Modified: 2026-03-24 13:49:23 | Functions: ['extract_names']
+File: transformation\silver_kalshi_transform.py | Modified: 2026-03-24 13:35:43 | Functions: []
+File: transformation\silver_news_transform.py | Modified: 2026-03-24 13:36:34 | Functions: ['get_sentiment_score', 'get_sentiment_label']
+
+=== 3. Bronze Layer ===
+
+Source: gdelt/gdelt_events | Files: 2 | Total: 138.53 KB
+Schema:
+          column_name column_type null  key default extra
+        GLOBALEVENTID     VARCHAR  YES None    None  None
+              SQLDATE     VARCHAR  YES None    None  None
+           Actor1Name     VARCHAR  YES None    None  None
+           Actor2Name     VARCHAR  YES None    None  None
+            EventCode     VARCHAR  YES None    None  None
+        EventBaseCode     VARCHAR  YES None    None  None
+        EventRootCode     VARCHAR  YES None    None  None
+       GoldsteinScale      DOUBLE  YES None    None  None
+          NumMentions      BIGINT  YES None    None  None
+           NumSources      BIGINT  YES None    None  None
+          NumArticles      BIGINT  YES None    None  None
+              AvgTone      DOUBLE  YES None    None  None
+Actor1Geo_CountryCode     VARCHAR  YES None    None  None
+Actor2Geo_CountryCode     VARCHAR  YES None    None  None
+ActionGeo_CountryCode     VARCHAR  YES None    None  None
+   ActionGeo_FullName     VARCHAR  YES None    None  None
+            SOURCEURL     VARCHAR  YES None    None  None
+          ingested_at     VARCHAR  YES None    None  None
+Rows:
+ count
+  2286
+Sample:
+GLOBALEVENTID  SQLDATE Actor1Name Actor2Name EventCode EventBaseCode EventRootCode  GoldsteinScale  NumMentions  NumSources  NumArticles  AvgTone Actor1Geo_CountryCode Actor2Geo_CountryCode ActionGeo_CountryCode      ActionGeo_FullName                                            SOURCEURL                      ingested_at
+   1295875490 20250324      CHINA     EUROPE       043           043            04             2.8            4           1            4 0.302419                    CH                    CH                    CH Beijing, Beijing, China https://www.globaltimes.cn/page/202603/1357459.shtml 2026-03-24T18:13:55.860373+00:00
+   1295875491 20250324      CHINA     EUROPE       043           043            04             2.8            1           1            1 0.302419                    SP                    SP                    SP   Madrid, Madrid, Spain https://www.globaltimes.cn/page/202603/1357459.shtml 2026-03-24T18:13:55.860373+00:00
+   1295875492 20250324     EUROPE      CHINA       042           042            04             1.9            4           1            4 0.302419                    CH                    CH                    CH Beijing, Beijing, China https://www.globaltimes.cn/page/202603/1357459.shtml 2026-03-24T18:13:55.860373+00:00
+MIN/MAX ingested_at:
+                          min_dt                           max_dt
+2026-03-24T18:13:55.860373+00:00 2026-03-24T18:13:55.860373+00:00
+
+Source: gdelt/gdelt_gkg | Files: 1 | Total: 126.30 KB
+Schema:
+    column_name column_type null  key default extra
+    GKGRECORDID     VARCHAR  YES None    None  None
+           DATE     VARCHAR  YES None    None  None
+       V2Themes     VARCHAR  YES None    None  None
+      V2Persons     VARCHAR  YES None    None  None
+V2Organizations     VARCHAR  YES None    None  None
+    V2Locations     VARCHAR  YES None    None  None
+         V2Tone     VARCHAR  YES None    None  None
+      SOURCEURL     VARCHAR  YES None    None  None
+    ingested_at     VARCHAR  YES None    None  None
+Rows:
+ count
+   111
+Sample:
+      GKGRECORDID           DATE                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    V2Themes                                         V2Persons                                                             V2Organizations                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                V2Locations                                                                                                      V2Tone                                                                                                                                                                SOURCEURL                      ingested_at
+ 20260324181500-0 20260324181500                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                WB_696_PUBLIC_SECTOR_MANAGEMENT,667;WB_2048_COMPENSATION_CAREERS_AND_INCENTIVES,667;WB_723_PUBLIC_ADMINISTRATION,667;WB_724_HUMAN_RESOURCES_FOR_PUBLIC_SECTOR,667;WB_2089_ETHICS_AND_CODES_OF_CONDUCT,667;IDEOLOGY,724;TAX_FNCACT_OFFICIAL,366;TAX_FNCACT_OFFICIAL,1640;WB_678_DIGITAL_GOVERNMENT,156;WB_678_DIGITAL_GOVERNMENT,1278;WB_694_BROADCAST_AND_MEDIA,156;WB_694_BROADCAST_AND_MEDIA,1278;WB_133_INFORMATION_AND_COMMUNICATION_TECHNOLOGIES,156;WB_133_INFORMATION_AND_COMMUNICATION_TECHNOLOGIES,1278;SECURITY_SERVICES,24;SECURITY_SERVICES,1333;TAX_FNCACT_POLICE,24;TAX_FNCACT_POLICE,1333;CRISISLEX_C07_SAFETY,24;CRISISLEX_C07_SAFETY,1333;TAX_FNCACT_CITIZENS,1592;TAX_FNCACT_CHIEF,309;TAX_MILITARY_TITLE_OFFICER,327;TAX_FNCACT_OFFICER,327;TAX_FNCACT_CEO,331;ELECTION,208;ELECTION,749;UNGP_POLITICAL_FREEDOMS,749;MEDIA_SOCIAL,156;MEDIA_SOCIAL,1278;WB_652_ICT_APPLICATIONS,156;WB_652_ICT_APPLICATIONS,1278;WB_662_SOCIAL_MEDIA,156;WB_662_SOCIAL_MEDIA,1278;WB_658_ENTERPRISE_APPLICATIONS,156;WB_658_ENTERPRISE_APPLICATIONS,1278;                                               NaN                                                                         NaN                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       5#Kerala, Kerala, India#IN#IN13#17699#10#76.5#-2100307#10;5#Kerala, Kerala, India#IN#IN13#17699#10#76.5#-2100307#340                  -7.36434108527132,2.32558139534884,9.68992248062016,12.015503875969,25.5813953488372,0,239 https://www.thehindu.com/elections/kerala-assembly/kerala-assembly-polls-2026-strict-action-to-be-taken-against-fake-misleading-social-media-content/article70781296.ece 2026-03-24T18:16:25.926016+00:00
+20260324181500-34 20260324181500                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      WB_2960_INDIGENOUS_PEOPLES,187;WB_421_SOCIAL_INCLUSION,187;WB_899_SOCIAL_SAFEGUARDS,187;WB_749_INDIGENOUS_PEOPLES,187;WB_933_ETHNIC_RELIGIOUS_AND_OTHER_MINORITIES,187;WB_134_SOCIAL_DEVELOPMENT,187;URBAN,168;USPEC_POLITICS_GENERAL1,441;TAX_FNCACT_CANDIDATE,586;LEADER,257;TAX_FNCACT_MAYOR,257;ELECTION,89;TAX_FNCACT_LEADER,405;TAX_ETHNICITY_INDIGENOUS,179;TAX_ETHNICITY_INDIGENOUS,251;ETH_INDIGINOUS,179;ETH_INDIGINOUS,251;               William Morin,340;Melanie Pilon,228 Association Of Municipalities,33;First Peoples National Party Of Canada,451                                                                                                                                                                                                                                                                                                                                                                                                                                                                       1#Canada#CA#CA##60#-96#CA#373;1#Canada#CA#CA##60#-96#CA#451;4#Michipicoten, Ontario, Canada#CA#CA08#12641#47.95#-84.9167#-569229#365                  4.8780487804878,5.69105691056911,0.813008130081301,6.50406504065041,19.5121951219512,0,105                                                              https://www.renfrewtoday.ca/2026/03/24/amo-offering-municipal-candidate-workshops-for-the-urban-indigenous/ 2026-03-24T18:16:25.926016+00:00
+20260324181500-38 20260324181500 SEIZE,708;SEIZE,1963;SEIZE,2399;TAX_POLITICAL_PARTY_REPUBLICAN,121;TAX_POLITICAL_PARTY_REPUBLICAN,1506;USPEC_POLITICS_GENERAL1,121;USPEC_POLITICS_GENERAL1,1506;TAX_FNCACT_JUDGE,3226;TAX_POLITICAL_PARTY_DEMOCRAT,173;TAX_FNCACT_CANDIDATES,1207;TAX_FNCACT_CANDIDATES,1275;TAX_FNCACT_CANDIDATES,1418;LEADER,1080;LEADER,1693;TAX_FNCACT_GOVERNOR,1080;TAX_FNCACT_GOVERNOR,1693;TAX_FNCACT_CITIZENS,398;TRIAL,142;TAX_FNCACT_ATTORNEY,142;CORRUPTION,1927;WB_2019_ANTI_CORRUPTION_LEGISLATION,1927;WB_2020_BRIBERY_FRAUD_AND_COLLUSION,1927;APPOINTMENT,3215;TAX_FNCACT_SHERIFF,94;TAX_FNCACT_SHERIFF,842;CRISISLEX_C07_SAFETY,94;CRISISLEX_C07_SAFETY,842;SOC_GENERALCRIME,1739;EPU_CATS_MIGRATION_FEAR_FEAR,1739;TAX_FNCACT_PRESIDENT,1816;TAX_POLITICAL_PARTY_DEMOCRATS,592;TAX_POLITICAL_PARTY_DEMOCRATS,1142;TAX_POLITICAL_PARTY_DEMOCRATS,1366;EPU_POLICY_CONGRESSIONAL,558;WB_2024_ANTI_CORRUPTION_AUTHORITIES,348;WB_2024_ANTI_CORRUPTION_AUTHORITIES,907;WB_2024_ANTI_CORRUPTION_AUTHORITIES,1633;WB_696_PUBLIC_SECTOR_MANAGEMENT,348;WB_696_PUBLIC_SECTOR_MANAGEMENT,907;WB_696_PUBLIC_SECTOR_MANAGEMENT,1633;WB_840_JUSTICE,348;WB_840_JUSTICE,907;WB_840_JUSTICE,1633;WB_2025_INVESTIGATION,348;WB_2025_INVESTIGATION,907;WB_2025_INVESTIGATION,1633;WB_831_GOVERNANCE,348;WB_831_GOVERNANCE,907;WB_831_GOVERNANCE,1633;WB_832_ANTI_CORRUPTION,348;WB_832_ANTI_CORRUPTION,907;WB_832_ANTI_CORRUPTION,1633;WB_1014_CRIMINAL_JUSTICE,348;WB_1014_CRIMINAL_JUSTICE,907;WB_1014_CRIMINAL_JUSTICE,1633;TAX_POLITICAL_PARTY_REPUBLICANS,1059;TAX_POLITICAL_PARTY_REPUBLICANS,2042;TAX_FNCACT_OFFICIALS,26;TAX_FNCACT_OFFICIALS,2776;ELECTION,16;ELECTION,259;ELECTION,2366;ELECTION,2438;ELECTION,2474;ELECTION,2766;ELECTION,3025;TAX_FNCACT_CITIZEN,2561;TAX_FNCACT_WORKERS,3033; Rob Bonta,160;Donald Trump,1829;Steve Hilton,1481                                                                         NaN 3#Riverside County, California, United States#US#USCA#CA065#33.7334#-116.051#277297#71;3#Riverside County, California, United States#US#USCA#CA065#33.7334#-116.051#277297#736;3#Riverside County, California, United States#US#USCA#CA065#33.7334#-116.051#277297#1759;2#Georgia, United States#US#USGA##32.9866#-83.6487#GA#2024;2#California, United States#US#USCA##36.17#-119.746#CA#133;2#California, United States#US#USCA##36.17#-119.746#CA#775;2#California, United States#US#USCA##36.17#-119.746#CA#1154;2#California, United States#US#USCA##36.17#-119.746#CA#1356;1#Chad#CD#CD##15#19#CD#99 -3.82409177820268,1.52963671128107,5.35372848948375,6.88336520076482,21.0325047801147,0.191204588910134,489                   https://www.ijpr.org/politics-government/2026-03-24/california-sheriff-running-for-governor-seizes-more-than-a-half-million-ballots-from-2025-election 2026-03-24T18:16:25.926016+00:00
+MIN/MAX ingested_at:
+  min_dt   max_dt
+2026-03- 2026-03-
+
+Source: kalshi_markets/closed | Files: 2 | Total: 45.69 KB
+Schema:
+               column_name column_type null  key default extra
+           can_close_early     BOOLEAN  YES None    None  None
+                close_time     VARCHAR  YES None    None  None
+              created_time     VARCHAR  YES None    None  None
+             custom_strike     VARCHAR  YES None    None  None
+     early_close_condition     VARCHAR  YES None    None  None
+              event_ticker     VARCHAR  YES None    None  None
+  expected_expiration_time     VARCHAR  YES None    None  None
+           expiration_time     VARCHAR  YES None    None  None
+          expiration_value     VARCHAR  YES None    None  None
+fractional_trading_enabled     BOOLEAN  YES None    None  None
+        last_price_dollars     VARCHAR  YES None    None  None
+    latest_expiration_time     VARCHAR  YES None    None  None
+         liquidity_dollars     VARCHAR  YES None    None  None
+               market_type     VARCHAR  YES None    None  None
+            no_ask_dollars     VARCHAR  YES None    None  None
+            no_bid_dollars     VARCHAR  YES None    None  None
+              no_sub_title     VARCHAR  YES None    None  None
+    notional_value_dollars     VARCHAR  YES None    None  None
+          open_interest_fp     VARCHAR  YES None    None  None
+                 open_time     VARCHAR  YES None    None  None
+    previous_price_dollars     VARCHAR  YES None    None  None
+  previous_yes_ask_dollars     VARCHAR  YES None    None  None
+  previous_yes_bid_dollars     VARCHAR  YES None    None  None
+     price_level_structure     VARCHAR  YES None    None  None
+              price_ranges     VARCHAR  YES None    None  None
+      response_price_units     VARCHAR  YES None    None  None
+                    result     VARCHAR  YES None    None  None
+             rules_primary     VARCHAR  YES None    None  None
+           rules_secondary     VARCHAR  YES None    None  None
+  settlement_timer_seconds      BIGINT  YES None    None  None
+  settlement_value_dollars     VARCHAR  YES None    None  None
+                    status     VARCHAR  YES None    None  None
+               strike_type     VARCHAR  YES None    None  None
+                  subtitle     VARCHAR  YES None    None  None
+                 tick_size      BIGINT  YES None    None  None
+                    ticker     VARCHAR  YES None    None  None
+                     title     VARCHAR  YES None    None  None
+              updated_time     VARCHAR  YES None    None  None
+             volume_24h_fp     VARCHAR  YES None    None  None
+                 volume_fp     VARCHAR  YES None    None  None
+           yes_ask_dollars     VARCHAR  YES None    None  None
+           yes_ask_size_fp     VARCHAR  YES None    None  None
+           yes_bid_dollars     VARCHAR  YES None    None  None
+           yes_bid_size_fp     VARCHAR  YES None    None  None
+             yes_sub_title     VARCHAR  YES None    None  None
+               ingested_at     VARCHAR  YES None    None  None
+             series_ticker     VARCHAR  YES None    None  None
+             status_pulled     VARCHAR  YES None    None  None
+                cap_strike      DOUBLE  YES None    None  None
+              floor_strike      DOUBLE  YES None    None  None
+Rows:
+ count
+   128
+Sample:
+ can_close_early           close_time                created_time                                          custom_strike                                        early_close_condition                event_ticker expected_expiration_time      expiration_time expiration_value  fractional_trading_enabled last_price_dollars latest_expiration_time liquidity_dollars market_type no_ask_dollars no_bid_dollars no_sub_title notional_value_dollars open_interest_fp            open_time previous_price_dollars previous_yes_ask_dollars previous_yes_bid_dollars price_level_structure                                             price_ranges response_price_units result                                                                                                                                                                                                     rules_primary                                                                                                                                                                                                                                             rules_secondary  settlement_timer_seconds settlement_value_dollars     status strike_type subtitle  tick_size                           ticker                                                                                                                                                  title                updated_time volume_24h_fp volume_fp yes_ask_dollars yes_ask_size_fp yes_bid_dollars yes_bid_size_fp yes_sub_title                      ingested_at       series_ticker status_pulled  cap_strike  floor_strike
+            True 2026-03-06T05:10:43Z 2025-12-27T18:51:26.871649Z {'Politician': 'b1414914-743e-4a92-8256-598097e34c6e'} This market will close and expire early if the event occurs.               KXAGNOMTXR-26     2026-03-03T15:00:00Z 2027-03-03T15:00:00Z               No                       False             0.0100   2027-03-03T15:00:00Z            0.0000      binary         1.0000         0.9900 Joan Huffman                 1.0000           633.00 2025-12-28T15:00:00Z                 0.0100                   0.0100                   0.0000           linear_cent [{'end': '1.0000', 'start': '0.0000', 'step': '0.0100'}]             usd_cent     no                                                                     If Joan Huffman wins the Republican Party nomination to contest the 2026 Attorney General election in Texas, then the market resolves to Yes. Due to a technical issue, trading on KXAGNOMTXR-26-MMID (Mayes Middleton) has been paused and this market is not yet resolved. Trading will reopen shortly at a future time, and we will follow up with a separate email once that time has been confirmed.                      1800                   0.0000 determined  structured                   1               KXAGNOMTXR-26-JHUF                                                                                      Who will be the Republican nominee for Attorney General in Texas? 2026-03-12T15:00:13.440949Z          0.00    633.00          0.0100       -12816.00          0.0000            0.00  Joan Huffman 2026-03-17T22:43:52.637307+00:00          KXAGNOMTXR        closed         NaN           NaN
+            True 2026-03-06T05:03:30Z 2025-12-27T18:51:26.871649Z {'Politician': '1623a42c-3bfb-4df3-8be0-c6c320c759b3'} This market will close and expire early if the event occurs.               KXAGNOMTXR-26     2026-03-03T15:00:00Z 2027-03-03T15:00:00Z               No                       False             0.0100   2027-03-03T15:00:00Z            0.0000      binary         1.0000         0.0000  Aaron Reitz                 1.0000         11358.00 2025-12-28T15:00:00Z                 0.0100                   1.0000                   0.0000           linear_cent [{'end': '1.0000', 'start': '0.0000', 'step': '0.0100'}]             usd_cent     no                                                                      If Aaron Reitz wins the Republican Party nomination to contest the 2026 Attorney General election in Texas, then the market resolves to Yes. Due to a technical issue, trading on KXAGNOMTXR-26-MMID (Mayes Middleton) has been paused and this market is not yet resolved. Trading will reopen shortly at a future time, and we will follow up with a separate email once that time has been confirmed.                      1800                   0.0000 determined  structured                   1               KXAGNOMTXR-26-AREI                                                                                      Who will be the Republican nominee for Attorney General in Texas? 2026-03-12T15:00:13.402491Z          0.00  14257.00          1.0000            0.00          0.0000            0.00   Aaron Reitz 2026-03-17T22:43:52.637307+00:00          KXAGNOMTXR        closed         NaN           NaN
+            True 2025-05-10T03:59:00Z 2025-04-30T14:36:14.901037Z                                                    NaN                     This market will close and expire early. KXSENATETARIFFCOUNT-25MAY09     2025-05-09T14:00:00Z 2025-05-16T14:00:00Z                                        False             0.0000   2025-05-16T14:00:00Z            0.0000      binary         1.0000         1.0000    60 to 100                 1.0000             0.00 2025-04-30T16:00:00Z                 0.0000                   0.0000                   0.0000           linear_cent [{'end': '1.0000', 'start': '0.0000', 'step': '0.0100'}]             usd_cent        If 60 to 100 members of the Senate vote Yea in favor of S.J.Res.49 - A joint resolution terminating the national emergency declared to impose global tariffs before May 9, 2025, then the market resolves to Yes.                        This joint resolution terminates the national emergency declared by President Donald J. Trump on April 2, 2025, which imposed a 10% tariff on most imports to the United States and additional duties on specified trading partners.                       300                      NaN     closed     between                   1 KXSENATETARIFFCOUNT-25MAY09-80.0 between 60 to 100 members of the Senate vote for S.J.Res.49 - A joint resolution terminating the national emergency declared to impose global tariffs? 2026-02-19T08:48:16.628714Z          0.00      0.00          0.0000            0.00          0.0000            0.00     60 to 100 2026-03-17T22:43:52.637307+00:00 KXSENATETARIFFCOUNT        closed       100.0          60.0
+MIN/MAX ingested_at:
+                          min_dt                           max_dt
+2026-03-17T22:43:52.637307+00:00 2026-03-20T18:09:40.650864+00:00
+
+Source: kalshi_markets/open | Files: 4 | Total: 2481.89 KB
+Schema:
+               column_name column_type null  key default extra
+           can_close_early     BOOLEAN  YES None    None  None
+                close_time     VARCHAR  YES None    None  None
+              created_time     VARCHAR  YES None    None  None
+             custom_strike     VARCHAR  YES None    None  None
+     early_close_condition     VARCHAR  YES None    None  None
+              event_ticker     VARCHAR  YES None    None  None
+  expected_expiration_time     VARCHAR  YES None    None  None
+           expiration_time     VARCHAR  YES None    None  None
+          expiration_value     VARCHAR  YES None    None  None
+fractional_trading_enabled     BOOLEAN  YES None    None  None
+        last_price_dollars     VARCHAR  YES None    None  None
+    latest_expiration_time     VARCHAR  YES None    None  None
+         liquidity_dollars     VARCHAR  YES None    None  None
+               market_type     VARCHAR  YES None    None  None
+            no_ask_dollars     VARCHAR  YES None    None  None
+            no_bid_dollars     VARCHAR  YES None    None  None
+              no_sub_title     VARCHAR  YES None    None  None
+    notional_value_dollars     VARCHAR  YES None    None  None
+          open_interest_fp     VARCHAR  YES None    None  None
+                 open_time     VARCHAR  YES None    None  None
+    previous_price_dollars     VARCHAR  YES None    None  None
+  previous_yes_ask_dollars     VARCHAR  YES None    None  None
+  previous_yes_bid_dollars     VARCHAR  YES None    None  None
+     price_level_structure     VARCHAR  YES None    None  None
+              price_ranges     VARCHAR  YES None    None  None
+      response_price_units     VARCHAR  YES None    None  None
+                    result     VARCHAR  YES None    None  None
+             rules_primary     VARCHAR  YES None    None  None
+           rules_secondary     VARCHAR  YES None    None  None
+  settlement_timer_seconds      BIGINT  YES None    None  None
+                    status     VARCHAR  YES None    None  None
+               strike_type     VARCHAR  YES None    None  None
+                  subtitle     VARCHAR  YES None    None  None
+                 tick_size      BIGINT  YES None    None  None
+                    ticker     VARCHAR  YES None    None  None
+                     title     VARCHAR  YES None    None  None
+              updated_time     VARCHAR  YES None    None  None
+             volume_24h_fp     VARCHAR  YES None    None  None
+                 volume_fp     VARCHAR  YES None    None  None
+           yes_ask_dollars     VARCHAR  YES None    None  None
+           yes_ask_size_fp     VARCHAR  YES None    None  None
+           yes_bid_dollars     VARCHAR  YES None    None  None
+           yes_bid_size_fp     VARCHAR  YES None    None  None
+             yes_sub_title     VARCHAR  YES None    None  None
+               ingested_at     VARCHAR  YES None    None  None
+             series_ticker     VARCHAR  YES None    None  None
+             status_pulled     VARCHAR  YES None    None  None
+              floor_strike      DOUBLE  YES None    None  None
+                cap_strike      DOUBLE  YES None    None  None
+Rows:
+ count
+ 13903
+Sample:
+ can_close_early           close_time                created_time           custom_strike                                                                           early_close_condition      event_ticker expected_expiration_time      expiration_time expiration_value  fractional_trading_enabled last_price_dollars latest_expiration_time liquidity_dollars market_type no_ask_dollars no_bid_dollars     no_sub_title notional_value_dollars open_interest_fp            open_time previous_price_dollars previous_yes_ask_dollars previous_yes_bid_dollars price_level_structure                                             price_ranges response_price_units result                                                                                                                                       rules_primary                                             rules_secondary  settlement_timer_seconds status      strike_type                          subtitle  tick_size              ticker                                                title                updated_time volume_24h_fp volume_fp yes_ask_dollars yes_ask_size_fp yes_bid_dollars yes_bid_size_fp    yes_sub_title                      ingested_at series_ticker status_pulled  floor_strike  cap_strike
+            True 2027-11-03T15:00:00Z 2024-12-03T05:20:06.871544Z {'Party': 'Democratic'} This market will close early following the swearing in of the Senator for the seat in question.       SENATENJ-26     2027-01-04T15:00:00Z 2027-11-03T15:00:00Z                                        False             0.9600   2027-11-03T15:00:00Z            0.0000      binary         0.0900         0.0400 Democratic party                 1.0000          1460.00 2024-12-03T15:00:00Z                 0.9600                   0.9600                   0.9100           linear_cent [{'end': '1.0000', 'start': '0.0000', 'step': '0.0100'}]             usd_cent        If a representative of the Democratic party is sworn in as a Senator of New Jersey for the term beginning in 2027, then the market resolves to Yes.                                                                                  1800 active           custom :: Current incumbent: Cory Booker          1       SENATENJ-26-D  Will Democratics win the Senate race in New Jersey? 2026-02-19T08:48:16.628714Z          0.00   7853.00          0.9600          490.00          0.9100          334.00 Democratic party 2026-03-20T18:43:01.887496+00:00      SENATENJ          open           NaN         NaN
+            True 2027-11-03T15:00:00Z 2024-12-03T05:20:06.871543Z {'Party': 'Republican'} This market will close early following the swearing in of the Senator for the seat in question.       SENATENJ-26     2027-01-04T15:00:00Z 2027-11-03T15:00:00Z                                        False             0.0600   2027-11-03T15:00:00Z            0.0000      binary         0.9500         0.9400 Republican party                 1.0000          7673.00 2024-12-03T15:00:00Z                 0.0600                   0.0600                   0.0500           linear_cent [{'end': '1.0000', 'start': '0.0000', 'step': '0.0100'}]             usd_cent        If a representative of the Republican party is sworn in as a Senator of New Jersey for the term beginning in 2027, then the market resolves to Yes.                                                                                  1800 active           custom                                ::          1       SENATENJ-26-R  Will Republicans win the Senate race in New Jersey? 2026-02-19T08:48:16.628714Z          0.00  21055.00          0.0600          559.00          0.0500            4.00 Republican party 2026-03-20T18:43:01.887496+00:00      SENATENJ          open           NaN         NaN
+            True 2027-01-01T15:00:00Z 2026-01-08T22:00:32.055277Z                     NaN                                    This market will close and expire early if the event occurs. KXVETOCOUNT-27JAN     2027-01-01T15:00:00Z 2027-01-01T15:00:00Z                                        False             0.1800   2027-01-01T15:00:00Z            0.0000      binary         0.8600         0.7800       At least 5                 1.0000           505.00 2026-01-09T15:00:00Z                 0.1800                   0.2100                   0.1500           linear_cent [{'end': '1.0000', 'start': '0.0000', 'step': '0.0100'}]             usd_cent                                             If President Trump vetoes at least 5 bills or resolutions before Jan 1, 2027, then the market resolves to Yes. A “pocket veto” is encompassed within the Payout Criterion.                      1800 active greater_or_equal                                            1 KXVETOCOUNT-27JAN-5 Will Trump veto at least 5 bills before Jan 1, 2027? 2026-02-19T08:48:16.628714Z          0.00    736.00          0.2200           25.00          0.1400          500.00       At least 5 2026-03-20T18:43:01.887496+00:00   KXVETOCOUNT          open           5.0         NaN
+MIN/MAX ingested_at:
+                          min_dt                           max_dt
+2026-03-18T05:07:26.459893+00:00 2026-03-20T18:43:01.887496+00:00
+
+Source: kalshi_markets/settled | Files: 3 | Total: 2821.40 KB
+Schema:
+               column_name column_type null  key default extra
+           can_close_early     BOOLEAN  YES None    None  None
+                close_time     VARCHAR  YES None    None  None
+              created_time     VARCHAR  YES None    None  None
+     early_close_condition     VARCHAR  YES None    None  None
+              event_ticker     VARCHAR  YES None    None  None
+  expected_expiration_time     VARCHAR  YES None    None  None
+           expiration_time     VARCHAR  YES None    None  None
+          expiration_value     VARCHAR  YES None    None  None
+fractional_trading_enabled     BOOLEAN  YES None    None  None
+        last_price_dollars     VARCHAR  YES None    None  None
+    latest_expiration_time     VARCHAR  YES None    None  None
+         liquidity_dollars     VARCHAR  YES None    None  None
+               market_type     VARCHAR  YES None    None  None
+            no_ask_dollars     VARCHAR  YES None    None  None
+            no_bid_dollars     VARCHAR  YES None    None  None
+              no_sub_title     VARCHAR  YES None    None  None
+    notional_value_dollars     VARCHAR  YES None    None  None
+          open_interest_fp     VARCHAR  YES None    None  None
+                 open_time     VARCHAR  YES None    None  None
+    previous_price_dollars     VARCHAR  YES None    None  None
+  previous_yes_ask_dollars     VARCHAR  YES None    None  None
+  previous_yes_bid_dollars     VARCHAR  YES None    None  None
+     price_level_structure     VARCHAR  YES None    None  None
+              price_ranges     VARCHAR  YES None    None  None
+      response_price_units     VARCHAR  YES None    None  None
+                    result     VARCHAR  YES None    None  None
+             rules_primary     VARCHAR  YES None    None  None
+           rules_secondary     VARCHAR  YES None    None  None
+  settlement_timer_seconds      BIGINT  YES None    None  None
+             settlement_ts     VARCHAR  YES None    None  None
+  settlement_value_dollars     VARCHAR  YES None    None  None
+                    status     VARCHAR  YES None    None  None
+                  subtitle     VARCHAR  YES None    None  None
+                 tick_size      BIGINT  YES None    None  None
+                    ticker     VARCHAR  YES None    None  None
+                     title     VARCHAR  YES None    None  None
+              updated_time     VARCHAR  YES None    None  None
+             volume_24h_fp     VARCHAR  YES None    None  None
+                 volume_fp     VARCHAR  YES None    None  None
+           yes_ask_dollars     VARCHAR  YES None    None  None
+           yes_ask_size_fp     VARCHAR  YES None    None  None
+           yes_bid_dollars     VARCHAR  YES None    None  None
+           yes_bid_size_fp     VARCHAR  YES None    None  None
+             yes_sub_title     VARCHAR  YES None    None  None
+               ingested_at     VARCHAR  YES None    None  None
+             series_ticker     VARCHAR  YES None    None  None
+             status_pulled     VARCHAR  YES None    None  None
+             custom_strike     VARCHAR  YES None    None  None
+               strike_type     VARCHAR  YES None    None  None
+              floor_strike      DOUBLE  YES None    None  None
+                cap_strike      DOUBLE  YES None    None  None
+Rows:
+ count
+ 21130
+Sample:
+ can_close_early           close_time                created_time                                                                                                       early_close_condition                 event_ticker expected_expiration_time      expiration_time expiration_value  fractional_trading_enabled last_price_dollars latest_expiration_time liquidity_dollars market_type no_ask_dollars no_bid_dollars        no_sub_title notional_value_dollars open_interest_fp            open_time previous_price_dollars previous_yes_ask_dollars previous_yes_bid_dollars price_level_structure                                             price_ranges response_price_units result                                                                                                                                                                                                                                                           rules_primary                                                                                                                                                                                                                                                                                                                                                                                                                                                                        rules_secondary  settlement_timer_seconds               settlement_ts settlement_value_dollars    status subtitle  tick_size                        ticker                                                                                                                                                                                                                                title                updated_time volume_24h_fp volume_fp yes_ask_dollars yes_ask_size_fp yes_bid_dollars yes_bid_size_fp       yes_sub_title                      ingested_at        series_ticker status_pulled                                                                                                                                                                                               custom_strike strike_type  floor_strike  cap_strike
+            True 2026-03-20T03:59:00Z 2026-03-13T14:16:50.827671Z                                               This market will close and expire early if the polling average is determined. KXVOTEHUBTRUMPUPDOWN-26MAR19     2026-03-20T14:00:00Z 2026-03-26T14:00:00Z               No                       False             0.0200   2026-03-26T14:00:00Z            0.0000      binary         1.0000         0.0000                 Yes                 1.0000          6480.00 2026-03-13T17:00:00Z                 0.0400                   0.0400                   0.0100           linear_cent [{'end': '1.0000', 'start': '0.0000', 'step': '0.0100'}]             usd_cent     no                                                                                   If the VoteHub time-adjusted average for Donald Trump's approval rating is above 42.0% for Mar 19, 2026 (as checked at Mar 20, 2026 at 10:00 AM ET), then the market resolves to Yes. The market resolves based on the VoteHub time-adjusted average displayed at the first 10:00 AM ET after the poll date when data is available. The value must match exactly as displayed on VoteHub's platform, including subject name formatting. Values are compared using one decimal place precision. If VoteHub doesn't display data for the specified date, the most recent prior time-adjusted average is used. Only the time-adjusted average counts, not raw polling averages.                      1800 2026-03-20T15:05:20.789714Z                   0.0000 finalized                   1  KXVOTEHUBTRUMPUPDOWN-26MAR19                                                                                                                                                                 Will Donald Trump's approval rating be above 42.0% for Mar 19, 2026?  2026-03-20T15:05:20.83875Z       2283.00   9551.00          1.0000            0.00          0.0000            0.00                 Yes 2026-03-20T21:32:15.439366+00:00 KXVOTEHUBTRUMPUPDOWN       settled                                                                                                                                                                                                         NaN         NaN           NaN         NaN
+            True 2026-03-19T23:19:45Z 2026-01-05T22:26:32.048094Z This market will close and expire early if the U.S. State Department issues a qualifying advisory for the specific country.    KXTRAVELDOWNGRADE-27JAN01     2027-01-01T15:00:00Z 2027-01-08T15:00:00Z              Yes                       False             0.9900   2027-01-08T15:00:00Z            0.0000      binary         0.0100         0.0000           Venezuela                 1.0000         12413.00 2026-01-06T15:00:00Z                 0.9900                   1.0000                   0.9900           linear_cent [{'end': '1.0000', 'start': '0.0000', 'step': '0.0100'}]             usd_cent    yes                                                                                     If the U.S. State Department issues, updates, or reaffirms a level 3 or lower travel advisory for Venezuela after Issuance and before Jan 1, 2027, then the market resolves to Yes.                                                                Advisories dated for future events must be effective before Jan 1, 2027 to qualify. The category level must be the one that applies to the whole country, rather than a particular region, unless the country rulebook variable in this case refers to a region. A Travel Advisory is considered "issued" when it appears on the official State Department travel advisories website with an official publication date.                      1800 2026-03-19T23:49:50.785368Z                   1.0000 finalized                   1 KXTRAVELDOWNGRADE-27JAN01-VEN                                                                                                                                                       Will the U.S. State Department issue a level 3 or lower warning for Venezuela? 2026-03-19T23:49:50.845901Z         23.00  16249.00          1.0000            0.00          0.9900        -4055.00           Venezuela 2026-03-20T21:32:15.439366+00:00    KXTRAVELDOWNGRADE       settled                                                                                                                                                                                    {'Country': 'Venezuela'}      custom           NaN         NaN
+            True 2026-03-20T14:00:00Z 2026-02-17T15:14:11.087001Z                                                                This market will close and expire early if the event occurs.                    KXDHSFUND     2027-01-01T15:00:00Z 2026-03-20T14:00:00Z               No                       False             0.0100   2026-03-20T14:00:00Z            0.0000      binary         1.0000         0.0000 Before Mar 20, 2026                 1.0000        321916.00 2026-02-17T23:00:00Z                 0.0100                   0.0100                   0.0000           linear_cent [{'end': '1.0000', 'start': '0.0000', 'step': '0.0100'}]             usd_cent     no If legislation that, upon becoming law, results in the Department of Homeland Security being funded at 12:01 AM ET on the later of (i) February 14, 2026 and (ii) the calendar day after enactment has become law before Mar 20, 2026, then the market resolves to Yes.                                                     The bill must pass the full chamber (not just committee) for House or Senate passage. For "become law" markets, the bill must be signed by the President or become law through veto override. Presidential pocket vetoes that expire resolve to No. Joint resolutions are treated as bills. Treaties require two-thirds Senate approval for passage. The market resolves based on the first occurrence of the specified milestone.                      1800 2026-03-20T14:35:00.816076Z                   0.0000 finalized                   1             KXDHSFUND-26MAR20 Will legislation that, upon becoming law, results in the Department of Homeland Security being funded at 12:01 AM ET on the later of (i) February 14, 2026 and (ii) the calendar day after enactment become law before Mar 20, 2026? 2026-03-20T14:35:00.861548Z       2197.00 504268.00          1.0000            0.00          0.0000            0.00 Before Mar 20, 2026 2026-03-20T21:32:15.439366+00:00            KXDHSFUND       settled {'Bill': 'legislation that, upon becoming law, results in the Department of Homeland Security being funded at 12:01 AM ET on the later of (i) February 14, 2026 and (ii) the calendar day after enactment'}      custom           NaN         NaN
+MIN/MAX ingested_at:
+                          min_dt                           max_dt
+2026-03-17T22:43:52.637307+00:00 2026-03-20T21:32:15.439366+00:00
+
+=== 4. Reference Files ===
+
+File: reference\cameo_actortypes.csv
+Columns:
+column_name column_type null  key default extra
+       code     VARCHAR  YES None    None  None
+      label     VARCHAR  YES None    None  None
+Rows:
+ count
+    18
+Sample:
+code      label
+ COP     Police
+ GOV Government
+ INS Insurgents
+
+File: reference\cameo_eventcodes.csv
+Columns:
+column_name column_type null  key default extra
+       code     VARCHAR  YES None    None  None
+      label     VARCHAR  YES None    None  None
+Rows:
+ count
+    20
+Sample:
+code            label
+  01 Public Statement
+  02           Appeal
+  03   Express Intent
+
+File: reference\cameo_quadclass.csv
+Columns:
+column_name column_type null  key default extra
+       code      BIGINT  YES None    None  None
+      label     VARCHAR  YES None    None  None
+Rows:
+ count
+     4
+Sample:
+ code                label
+    1   Verbal Cooperation
+    2 Material Cooperation
+    3      Verbal Conflict
+
+File: reference\fips_countries.csv
+Columns:
+column_name column_type null  key default extra
+       code     VARCHAR  YES None    None  None
+      label     VARCHAR  YES None    None  None
+Rows:
+ count
+    18
+Sample:
+code         label
+  US United States
+  CH         China
+  RS        Russia
+
+=== 6. Docker Status ===
+
+--- Dockerfile ---
+# Use the official Apache Spark image
+FROM apache/spark:3.5.1
+
+USER root
+
+# Install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Create project directories and handle permissions
+WORKDIR /app
+RUN mkdir -p data/bronze data/silver data/gold && \
+    mkdir -p /opt/spark/work-dir/.ivy2 && \
+    chown -R 185:185 /app && \
+    chown -R 185:185 /opt/spark/work-dir
+
+# Set Ivy cache to the writable directory
+ENV IVY_PACKAGE_DIR=/opt/spark/work-dir/.ivy2
+
+# Switch back to non-root user (Spark default is 185)
+USER 185
+
+
+--- docker-compose.yml ---
+services:
+  spark-app:
+    build: .
+    container_name: prediction_intelligence_app
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    environment:
+      - PYSPARK_PYTHON=python3
+      - PYSPARK_DRIVER_PYTHON=python3
+    command: ["tail", "-f", "/dev/null"]
+    working_dir: /app
+
+
+--- docker ps ---
+error during connect: Get "http://%2F%2F.%2Fpipe%2FdockerDesktopLinuxEngine/v1.51/containers/json": open //./pipe/dockerDesktopLinuxEngine: The system cannot find the file specified.
+
+
+=== 7. Agent Skills and Workflow Files ===
+.agent\skills\brainstorm\SKILL.md
+.agent\skills\data_engineer_pipeline_expert\SKILL.md
+.agent\skills\debugger\SKILL.md
+.agent\skills\kalshi-api-debug\SKILL.md
+.agent\skills\project-goal-validator\SKILL.md
+.agent\skills\state-audit\SKILL.md
+.agent\workflows\pre-response-checklist.md
+
+--- pre-response-checklist.md ---
+---
+description: Mandatory pre-response checklist — run before ANY constructive work
+---
+
+# Pre-Response Checklist
+# PredictIQ Agent — Behavioral Rules
+# Version: 1.1
+# Location: .cursor/rules/pre-response-checklist or .cursorrules
+
+---
+
+## RULE 1 — IMPLEMENTATION GATE (NO EXCEPTIONS)
+
+BEFORE EVERY RESPONSE, ask yourself:
+- Will my response contain any code, commands, file modifications,
+  or terminal instructions?
+
+If YES:
+  - STOP.
+  - Do not write any code.
+  - Do not analyze files.
+  - Do not proceed with implementation.
+  - Ask the user this exact question first:
+    "Do you want me to implement this, or give you steps to do it yourself?"
+  - Wait for an explicit reply before proceeding.
+
+If user says YES to implementation:
+  - Proceed to Rule 2.
+
+If user says NO to implementation:
+  - Provide an ordered list of:
+    - Exact terminal/CMD commands (copy-pasteable)
+    - File paths and line numbers for any manual edits
+    - Code snippets to paste (not full files)
+    - DuckDB/SQL queries if data work is involved
+  - Keep it tight. Do not over-explain.
+
+For trivial changes (5 lines or fewer, single file):
+  - Proceed directly but state in one line what you are about to do
+    before doing it.
+
+This rule overrides ALL other steps including brainstorm and debugging.
+
+---
+
+## RULE 2 — CLASSIFY BEFORE ACTING
+
+Determine the type of work before doing anything else:
+
+- Creative/Constructive (new feature, new script, architecture change)
+  → Go to Rule 3
+
+- Bug fix / Error
+  → Read .agent/skills/debugger/SKILL.md first, then proceed
+
+- Kalshi-related
+  → Read .agent/skills/kalshi-api-debug/SKILL.md first, then proceed
+
+- State audit / context sync / project checkpoint
+  → Read .agent/skills/state-audit/SKILL.md and follow it completely
+
+- Simple question / clarification
+  → Answer directly, no skill needed
+
+---
+
+## RULE 3 — BRAINSTORM FIRST (MANDATORY FOR CREATIVE WORK)
+
+// turbo
+Read .agent/skills/brainstorm/SKILL.md and follow its process completely:
+
+1. Understand current context — review files, PRD, prior decisions
+2. Ask questions ONE AT A TIME — never batch questions
+3. Clarify non-functional requirements
+4. Present Understanding Lock — get explicit user confirmation
+5. Explore 2-3 design approaches
+6. Present the chosen design incrementally
+7. Maintain a decision log
+8. Do NOT write code until the user confirms the design
+
+---
+
+## RULE 4 — VALIDATE AGAINST PROJECT GOALS
+
+// turbo
+Read .agent/skills/project-goal-validator/SKILL.md and confirm:
+
+- Does this align with the PRD phases?
+- Does it follow Flat, Free, Native principles?
+- Are we in the correct phase for this work?
+- Does it respect the $0/month constraint?
+
+If any answer is NO — raise it with the user before proceeding.
+
+---
+
+## RULE 5 — CHECK DATA PIPELINE PATTERNS
+
+// turbo
+If the work involves data ingestion, ETL, or schema design:
+Read .agent/skills/data_engineer_pipeline_expert/SKILL.md
+for best practices before writing any code.
+
+---
+
+## RULE 6 — IMPLEMENT
+
+Only after Rules 1-5 are complete, proceed with implementation.
+
+Codebase standards (strictly enforced):
+- No emojis anywhere — not in code, logs, print statements, or comments
+- Flat procedural scripts — no deep class hierarchies
+- No managed cloud platforms — local native only
+- DuckDB for Bronze, PySpark + Delta Lake for Silver/Gold
+- Every script must follow the two-file pattern (latest.parquet + TIMESTAMP.parquet)
+- Every script must include dedup logic (.last_url or .seen_urls)
+
+---
+
+## RULE 7 — GIT PUSH REMINDER
+
+After any response where 2 or more files were created or modified,
+add this block at the very end of your response:
+
+[GIT] Good time to push your changes.
+
+  git add .
+  git commit -m "<describe what changed in one line>"
+  git push origin main
+
+Fill in the commit message based on what was actually changed.
+Do NOT push anything yourself. Just provide the commands.
+
+---
+
+## RULE 8 — STATE AUDIT
+
+When the user says any of the following:
+- "run a state audit"
+- "sync context"
+- "sync context for Claude"
+- "where are we right now"
+- "what is done and what is pending"
+- "give me a project checkpoint"
+
+Read .agent/skills/state-audit/SKILL.md and follow it completely.
+Produce the full structured document. Do not summarize or skip sections.

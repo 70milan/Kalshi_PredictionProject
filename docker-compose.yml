@@ -11,3 +11,88 @@ services:
       - PYSPARK_DRIVER_PYTHON=python3
     command: ["tail", "-f", "/dev/null"]
     working_dir: /app
+
+  ingest-bbc:
+    build: .
+    container_name: predictiq_ingest_bbc
+    restart: unless-stopped
+    volumes:
+      - .:/app
+    command: ["python3", "-u", "ingestion/bbc_ingest.py"]
+    working_dir: /app
+
+  ingest-cnn:
+    build: .
+    container_name: predictiq_ingest_cnn
+    restart: unless-stopped
+    volumes:
+      - .:/app
+    command: ["python3", "-u", "ingestion/cnn_ingest.py"]
+    working_dir: /app
+
+  ingest-fox:
+    build: .
+    container_name: predictiq_ingest_fox
+    restart: unless-stopped
+    volumes:
+      - .:/app
+    command: ["python3", "-u", "ingestion/fox_ingest.py"]
+    working_dir: /app
+
+  ingest-hindu:
+    build: .
+    container_name: predictiq_ingest_hindu
+    restart: unless-stopped
+    volumes:
+      - .:/app
+    command: ["python3", "-u", "ingestion/hindu_ingest.py"]
+    working_dir: /app
+
+  ingest-nypost:
+    build: .
+    container_name: predictiq_ingest_nypost
+    restart: unless-stopped
+    volumes:
+      - .:/app
+    command: ["python3", "-u", "ingestion/nypost_ingest.py"]
+    working_dir: /app
+
+  ingest-nyt:
+    build: .
+    container_name: predictiq_ingest_nyt
+    restart: unless-stopped
+    volumes:
+      - .:/app
+    command: ["python3", "-u", "ingestion/nyt_news_ingest.py"]
+    working_dir: /app
+
+  ingest-gdelt-events:
+    build: .
+    container_name: predictiq_ingest_gdelt_events
+    restart: unless-stopped
+    volumes:
+      - .:/app
+    command: ["python3", "-u", "ingestion/gdelt_events_ingest.py"]
+    working_dir: /app
+    
+  ingest-kalshi-active:
+    build: .
+    container_name: predictiq_ingest_kalshi_active
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+    command: ["python3", "-u", "ingestion/kalshi_markets_active.py"]
+    working_dir: /app
+
+  ingest-kalshi-daily:
+    build: .
+    container_name: predictiq_ingest_kalshi_daily
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+    command: ["python3", "-u", "ingestion/kalshi_daily_settlement.py"]
+    working_dir: /app

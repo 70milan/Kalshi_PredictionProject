@@ -11,3 +11,6 @@ pandas>=2.0.0,<2.1.0
 cryptography==42.0.5
 feedparser==6.0.11
 trafilatura==1.8.1
+vaderSentiment==3.3.2
+curl_cffi==0.5.4
+beautifulsoup4==4.13.4

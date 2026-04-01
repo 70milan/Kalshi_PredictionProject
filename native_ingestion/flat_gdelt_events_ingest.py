@@ -14,7 +14,7 @@ GDELT_LASTUPDATE_URL  = "http://data.gdeltproject.org/gdeltv2/lastupdate.txt"
 
 # Always write to project root — two levels up from script location
 PROJECT_ROOT  = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BRONZE_DIR    = os.path.join(PROJECT_ROOT, "data", "bronze", "gdelt_events")
+BRONZE_DIR    = os.path.join(PROJECT_ROOT, "data", "bronze", "gdelt", "gdelt_events")
 LAST_URL_FILE = os.path.join(BRONZE_DIR, ".last_url")  # tracks last ingested file URL
 
 # Column names for GDELT 2.0 Event files (61 columns total)

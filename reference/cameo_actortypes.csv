@@ -1,0 +1,19 @@
+code,label
+COP,Police
+GOV,Government
+INS,Insurgents
+JUD,Judiciary
+MIL,Military
+MED,Media
+OPP,Political Opposition
+REB,Rebels
+SEP,Separatist
+SPY,State Intelligence
+UAF,Armed Forces
+AGR,Agriculture
+BUS,Business
+EDU,Education
+ELI,Elites
+HLH,Health
+LAB,Labor
+cvl,Civilians

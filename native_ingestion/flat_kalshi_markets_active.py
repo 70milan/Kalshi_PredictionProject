@@ -74,7 +74,7 @@ def get(path: str, params: dict = None, max_retries: int = 5) -> dict:
             # Handle 429 Rate Limit explicitly
             if response.status_code == 429:
                 wait_time = (2 ** attempt) * 10
-                print(f"    ⚠️  Rate limited (429). Waiting {wait_time}s before retry {attempt + 1}/{max_retries}...")
+                print(f"    Rate limited (429). Waiting {wait_time}s before retry {attempt + 1}/{max_retries}...")
                 time.sleep(wait_time)
                 continue
                 
@@ -82,7 +82,7 @@ def get(path: str, params: dict = None, max_retries: int = 5) -> dict:
             return response.json()
             
         except requests.exceptions.RequestException as e:
-            print(f"    ❌ Request failed: {e}")
+            print(f"    Request failed: {e}")
             if attempt == max_retries - 1:
                 return {}
             time.sleep(5)
@@ -245,29 +245,29 @@ def main():
     print("=" * 65)
 
     # 1. Get open political series
-    print("\n📋 Fetching open political series...")
+    print("\nFetching open political series...")
     series_tickers = fetch_political_series()
     if not series_tickers:
-        print("⚠️  No political series found.")
+        print("No political series found.")
         return
 
     # 2. Fetch open markets
-    print(f"\n📡 Fetching open markets...")
+    print(f"\nFetching open markets...")
     all_markets = fetch_all_political_markets(series_tickers)
-    print(f"\n✅ Total markets fetched: {len(all_markets)}")
+    print(f"\nTotal markets fetched: {len(all_markets)}")
     if not all_markets:
-        print("⚠️  No open markets found.")
+        print("No open markets found.")
         return
 
     # 3. Save
-    print(f"\n💾 Saving to Bronze...")
+    print(f"\nSaving to Bronze...")
     save_to_bronze(all_markets)
 
     # 4. Preview
-    print(f"\n🔍 Sample:")
+    print(f"\nSample:")
     preview(all_markets)
 
-    print("\n✅ Done.")
+    print("\nDone.")
     print("=" * 65)
 
 

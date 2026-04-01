@@ -1,4 +1,5 @@
 import os
+import time
 import requests
 import zipfile
 import io
@@ -14,7 +15,7 @@ GDELT_LASTUPDATE_URL  = "http://data.gdeltproject.org/gdeltv2/lastupdate.txt"
 
 # Docker: /app is the project root (volume-mounted)
 PROJECT_ROOT  = "/app"
-BRONZE_DIR    = os.path.join(PROJECT_ROOT, "data", "bronze", "gdelt_events")
+BRONZE_DIR    = os.path.join(PROJECT_ROOT, "data", "bronze", "gdelt", "gdelt_events")
 LAST_URL_FILE = os.path.join(BRONZE_DIR, ".last_url")  # tracks last ingested file URL
 
 # Column names for GDELT 2.0 Event files (61 columns total)
@@ -205,4 +206,12 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    print(f"Initializing Docker Polling Service ({int(900/60)}-min intervals)...")
+    while True:
+        try:
+            main()
+        except Exception as e:
+            print(f"CRITICAL ERROR in ingestion loop: {e}")
+        
+        print("Sleeping for 900 seconds before poll...")
+        time.sleep(900)

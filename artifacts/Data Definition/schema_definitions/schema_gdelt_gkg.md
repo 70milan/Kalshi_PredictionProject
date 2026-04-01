@@ -1,0 +1,16 @@
+# Schema: GDELT GKG (Global Knowledge Graph)
+
+**Script:** `flat_gdelt_gkg_ingest.py`  
+**Output:** `data/bronze/gdelt/gdelt_gkg/gkg_[timestamp].parquet`
+
+| Field | Type | Description |
+| :--- | :--- | :--- |
+| `GKGRECORDID` | STRING | Unique GDELT identifier for this news observation (e.g. `202403241505-1`). |
+| `DATE` | STRING | GDELT timestamp (YYYYMMDDHHMMSS) representing the news cycle. |
+| `V2Themes` | STRING | Semicolon-delimited global themes/topics identified in the document. |
+| `V2Persons` | STRING | Semicolon-delimited list of persons (Entities) mentioned. Critical for actor-market joins. |
+| `V2Organizations`| STRING | Semicolon-delimited list of organizations/companies mentioned in the news. |
+| `V2Locations` | STRING | Semicolon-delimited geographical locations extracted from the text. |
+| `V2Tone` | STRING | Comma-delimited sentiment scores (Tone, Positive/Negative, Polarity, etc.). |
+| `SOURCEURL` | STRING | Canonical URL of the source news article. Link to original reporting. |
+| `ingested_at` | STRING | UTC ISO timestamp showing when this record entered PredictIQ. |

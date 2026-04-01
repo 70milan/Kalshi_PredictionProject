@@ -1,4 +1,5 @@
 import os
+import time
 import feedparser
 import trafilatura
 import pandas as pd
@@ -137,4 +138,12 @@ def main():
     print("=" * 65)
 
 if __name__ == "__main__":
-    main()
+    print(f"Initializing Docker Polling Service ({int(900/60)}-min intervals)...")
+    while True:
+        try:
+            main()
+        except Exception as e:
+            print(f"CRITICAL ERROR in ingestion loop: {e}")
+        
+        print("Sleeping for 900 seconds before poll...")
+        time.sleep(900)

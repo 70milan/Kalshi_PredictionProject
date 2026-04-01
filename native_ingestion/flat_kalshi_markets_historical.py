@@ -11,7 +11,7 @@ from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives import serialization
 
 # ─────────────────────────────────────────────
-# ⚠️  ONE-TIME SCRIPT — RUN ONCE THEN DONE
+# ONE-TIME SCRIPT — RUN ONCE THEN DONE
 # Backfills ALL historical closed + settled
 # Kalshi political markets into Bronze layer.
 # Single loop — fetches both statuses per series
@@ -79,7 +79,7 @@ def get(path: str, params: dict = None, max_retries: int = 5) -> dict:
             
             if response.status_code == 429:
                 wait_time = (2 ** attempt) * 10
-                print(f"    ⚠️  Rate limited (429). Waiting {wait_time}s before retry {attempt + 1}/{max_retries}...")
+                print(f"    Rate limited (429). Waiting {wait_time}s before retry {attempt + 1}/{max_retries}...")
                 time.sleep(wait_time)
                 continue
                 
@@ -87,7 +87,7 @@ def get(path: str, params: dict = None, max_retries: int = 5) -> dict:
             return response.json()
             
         except requests.exceptions.RequestException as e:
-            print(f"    ❌ Request failed: {e}")
+            print(f"    Request failed: {e}")
             if attempt == max_retries - 1:
                 return {}
             time.sleep(5)
@@ -106,7 +106,7 @@ def fetch_political_series() -> list:
     Fetch all series with no status filter to include resolved ones.
     Filter to political categories only.
     """
-    print(f"\n📋 Fetching all series (including resolved)...")
+    print(f"\nFetching all series (including resolved)...")
     data   = get(SERIES_ENDPOINT)
     series = data.get("series", [])
     print(f"   Total series found: {len(series)}")
@@ -146,7 +146,7 @@ def fetch_markets_for_series(series_ticker: str, status: str) -> list:
         page_count += 1
 
         if page_count > MAX_PAGES_PER_SERIES:
-            print(f"      ⚠️  Hit page limit for {series_ticker} [{status}]")
+            print(f"      Hit page limit for {series_ticker} [{status}]")
             break
 
         params = {
@@ -192,7 +192,7 @@ def fetch_all_historical(series_tickers: list) -> tuple:
     closed_series_count  = 0
     settled_series_count = 0
 
-    print(f"\n📡 Processing {len(series_tickers)} political series (closed + settled in one pass)...")
+    print(f"\nProcessing {len(series_tickers)} political series (closed + settled in one pass)...")
     print(f"   This will take a while — grab a coffee.\n")
 
     for i, ticker in enumerate(series_tickers, 1):
@@ -230,7 +230,7 @@ def fetch_all_historical(series_tickers: list) -> tuple:
 
         time.sleep(0.3)
 
-    print(f"\n   ✅ Pass complete.")
+    print(f"\n   Pass complete.")
     print(f"   Closed  — {len(all_closed):>6} markets from {closed_series_count} series")
     print(f"   Settled — {len(all_settled):>6} markets from {settled_series_count} series")
 
@@ -271,7 +271,7 @@ def save_to_bronze(markets: list, output_dir: str, status: str) -> str:
     conn.execute(f"COPY (SELECT * FROM df) TO '{filepath}' (FORMAT 'PARQUET')")
     conn.close()
 
-    print(f"\n💾 Saved [{status}]:")
+    print(f"\nSaved [{status}]:")
     print(f"   Path    → {filepath}")
     print(f"   Rows    → {len(flat)}")
     print(f"   Columns → {len(df.columns)}")
@@ -284,7 +284,7 @@ def save_to_bronze(markets: list, output_dir: str, status: str) -> str:
 # ─────────────────────────────────────────────
 
 def preview(markets: list, status: str, n: int = 5):
-    print(f"\n🔍 Sample of {n} [{status}] markets:")
+    print(f"\nSample of {n} [{status}] markets:")
     print(f"   {'SERIES':<25} {'TICKER':<35} {'RESULT':<10}  TITLE")
     print(f"   {'-'*25} {'-'*35} {'-'*10}  {'-'*40}")
     for m in markets[:n]:
@@ -315,7 +315,7 @@ def verify_saved(closed_path: str, settled_path: str):
             ).fetchone()
             print(f"   {label:<10} → {row[0]:>6} markets across {row[1]} series")
         except Exception as e:
-            print(f"   {label:<10} → ❌ {e}")
+            print(f"   {label:<10} → {e}")
 
     conn.close()
 
@@ -333,13 +333,13 @@ def main():
     print(f"Settled dir : {SETTLED_DIR}")
     print(f"Page cap    : {MAX_PAGES_PER_SERIES} per series per status")
     print("=" * 65)
-    print("\n⚠️  ONE-TIME run. Do not interrupt — files save at the end.")
+    print("\nONE-TIME run. Do not interrupt — files save at the end.")
     print("   Estimated time: 15-25 minutes.\n")
 
     # 1. Get all political series (including resolved)
     series_tickers = fetch_political_series()
     if not series_tickers:
-        print("⚠️  No political series found. Check TARGET_CATEGORIES.")
+        print("No political series found. Check TARGET_CATEGORIES.")
         return
 
     # 2. Single loop — fetch closed + settled per series
@@ -354,14 +354,14 @@ def main():
         closed_path = save_to_bronze(closed_markets, CLOSED_DIR, "closed")
         preview(closed_markets, "closed")
     else:
-        print("⚠️  No closed markets found.")
+        print("No closed markets found.")
 
     # 4. Save settled
     if settled_markets:
         settled_path = save_to_bronze(settled_markets, SETTLED_DIR, "settled")
         preview(settled_markets, "settled")
     else:
-        print("⚠️  No settled markets found.")
+        print("No settled markets found.")
 
     # 5. Verify
     verify_saved(closed_path, settled_path)
@@ -369,7 +369,7 @@ def main():
     # 6. Final summary
     total = len(closed_markets) + len(settled_markets)
     print(f"\n{'='*65}")
-    print(f"✅ Historical backfill complete.")
+    print(f"Historical backfill complete.")
     print(f"   Closed markets  : {len(closed_markets):>6}")
     print(f"   Settled markets : {len(settled_markets):>6}")
     print(f"   Total           : {total:>6}")
