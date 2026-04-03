@@ -11,8 +11,11 @@ Lists all active ingestion scripts and their target Bronze Layer storage.
 | :--- | :--- | :--- | :--- | :--- |
 | [gdelt_events_ingest.py](file:///c:/Data%20Engineering/codeprep/predection_project/native_ingestion/gdelt_events_ingest.py) | GDELT 2.0 Events | 15 mins | `data/bronze/gdelt/gdelt_events` | Structured "actor-action" records. |
 | `flat_gdelt_gkg_ingest.py` | GDELT 2.0 GKG | 15 mins | `data/bronze/gdelt/gdelt_gkg` | Themes, entities (V2Persons), and tone. |
-| `flat_reuters_news_ingest.py`| Reuters Politics | Periodic | `data/bronze/reuters` | Scraped full-text news context. |
-| `flat_nyt_news_ingest.py` | NYT Politics | Periodic | `data/bronze/nyt` | Scraped full-text news context. |
+| `flat_bbc_ingest.py` | BBC News | 15 mins | `data/bronze/news/bbc` | Global political/economic news context. |
+| `flat_cnn_ingest.py` | CNN Politics | 15 mins | `data/bronze/news/cnn` | US-centric political news context. |
+| `flat_fox_ingest.py` | Fox News | 15 mins | `data/bronze/news/foxnews` | US-centric political news context. |
+| `flat_nypost_ingest.py` | NY Post | 15 mins | `data/bronze/news/nypost` | Alternative US political context. |
+| `flat_hindu_ingest.py` | The Hindu | 15 mins | `data/bronze/news/thehindu` | APAC regional and global economic news. |
 | `flat_kalshi_markets_active.py`| Kalshi API (V2) | Real-time | `data/bronze/kalshi_markets/open`| Currently open prediction markets. |
 | `flat_kalshi_daily_settlement.py`| Kalshi API (V2) | Daily | `data/bronze/kalshi_markets/settled`| Settled/Resolved historical markets. |
 
@@ -53,19 +56,20 @@ Lists all active ingestion scripts and their target Bronze Layer storage.
 | `SOURCEURL` | STRING | Canonical URL of the news article. |
 | `ingested_at` | STRING | UTC ISO timestamp showing when it entered PredictIQ. |
 
-### 📰 News RSS (Reuters & NYT)
-**Scripts:** `flat_reuters_news_ingest.py`, `flat_nyt_news_ingest.py`  
-**Description:** Full-text context for high-confidence LLM Research Briefs.
+### 📰 Global News Intelligence
+**Scripts:** `flat_bbc_ingest.py`, `flat_cnn_ingest.py`, `flat_fox_ingest.py`, `flat_nypost_ingest.py`, `flat_hindu_ingest.py`  
+**Description:** Full-text semantic context required for high-confidence LLM Research Briefs and News Sentiment analysis operations.
 
 | Field | Type | Description |
 | :--- | :--- | :--- |
-| `source` | STRING | Originating publisher ("Reuters", "NYT"). |
+| `source` | STRING | Originating publisher (e.g., "BBC", "CNN", "Fox News", "NY Post", "The Hindu"). |
 | `title` | STRING | Article headline. |
-| `link` | STRING | Canonical URL (Join key). |
-| `published_at` | STRING | Original publication timestamp. |
-| `full_text` | STRING | The whole article body (scraped via Trafilatura). |
-| `scraped` | BOOLEAN | `True` if extraction was successful. |
-| `ingested_at` | STRING | UTC ISO timestamp showing when it entered PredictIQ. |
+| `link` | STRING | Canonical URL (Serves as primary deduplication key). |
+| `published_at` | STRING | Original publication timestamp extracted via feedparser. |
+| `summary` | STRING | Brief text snippet/description extracted from the RSS feed. |
+| `full_text` | STRING | The whole article body scraped via Trafilatura. |
+| `scraped` | BOOLEAN | `True` if web extraction was successful via Trafilatura. |
+| `ingested_at` | STRING | UTC ISO timestamp establishing when the data landed in PredictIQ Bronze. |
 
 ### 📈 Kalshi Prediction Markets
 **Script:** `flat_kalshi_markets_active.py`  
