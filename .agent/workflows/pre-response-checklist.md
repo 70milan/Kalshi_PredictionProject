@@ -9,6 +9,23 @@ description: Mandatory pre-response checklist — run before ANY constructive wo
 
 ---
 
+## RULE 0 — LOAD ALL SKILLS ON STARTUP (NO EXCEPTIONS)
+
+At the START of every new conversation, before doing ANY work, read ALL skill files:
+
+// turbo
+1. Read `.agent/skills/project-goal-validator/SKILL.md` — project goals, no hardcoding, security, git protocol
+2. Read `.agent/skills/brainstorm/SKILL.md` — creative/constructive work process
+3. Read `.agent/skills/debugger/SKILL.md` — error handling and debugging
+4. Read `.agent/skills/kalshi-api-debug/SKILL.md` — Kalshi API patterns and gotchas
+5. Read `.agent/skills/data_engineer_pipeline_expert/SKILL.md` — data pipeline best practices
+6. Read `.agent/skills/state-audit/SKILL.md` — project state and audit format
+
+These skills contain hard-won lessons and mandatory project rules.
+Skipping them risks repeating past mistakes.
+
+---
+
 ## RULE 1 — IMPLEMENTATION GATE (NO EXCEPTIONS)
 
 BEFORE EVERY RESPONSE, ask yourself:
@@ -117,19 +134,24 @@ Codebase standards (strictly enforced):
 
 ---
 
-## RULE 7 — GIT PUSH REMINDER
+## RULE 7 — GIT WORKFLOW (STRICT 3-STEP PROTOCOL)
 
-After any response where 2 or more files were created or modified,
-add this block at the very end of your response:
+Git push is ONLY executed on the user's explicit command. Never auto-push.
 
-[GIT] Good time to push your changes.
+After any response where 2 or more files were created or modified:
 
-  git add .
-  git commit -m "<describe what changed in one line>"
-  git push origin main
+1. **Before proposing any git operation**, verify `.gitignore` covers:
+   - `data/`, `.env`, `__pycache__/`, `.venv/`, `*.pyc`
+   - Any test output, debug logs, or scratch files
+   - IDE folders (`.idea/`, `.vscode/`)
+   - No personal information, API keys, or hardcoded paths in staged files
 
-Fill in the commit message based on what was actually changed.
-Do NOT push anything yourself. Just provide the commands.
+2. **Step A**: Propose which specific files to `git add` — WAIT for user approval
+3. **Step B**: Propose commit message — WAIT for user approval
+4. **Step C**: Execute `git push` — ONLY after user explicitly says to push
+
+NEVER run `git add .` blindly. Always list specific files.
+Each step requires the user's response before proceeding to the next.
 
 ---
 

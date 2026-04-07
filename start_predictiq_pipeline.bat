@@ -17,7 +17,7 @@ docker ps
 
 echo.
 echo ========================================================
-echo All background pipeline trackers are active!
+echo All background pipeline trackers (News, Events, GKG, Kalshi) are active!
 echo Use 'docker compose logs -f' to monitor them securely.
 echo ========================================================
 pause

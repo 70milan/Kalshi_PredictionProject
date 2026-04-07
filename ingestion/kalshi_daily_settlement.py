@@ -81,7 +81,7 @@ def get(path: str, params: dict = None, max_retries: int = 5) -> dict:
 
             if response.status_code == 429:
                 wait_time = (2 ** attempt) * 10
-                print(f"    ⚠️  Rate limited (429). Waiting {wait_time}s before retry {attempt + 1}/{max_retries}...")
+                print(f"    Rate limited (429). Waiting {wait_time}s before retry {attempt + 1}/{max_retries}...")
                 time.sleep(wait_time)
                 continue
 
@@ -89,7 +89,7 @@ def get(path: str, params: dict = None, max_retries: int = 5) -> dict:
             return response.json()
 
         except requests.exceptions.RequestException as e:
-            print(f"    ❌ Request failed: {e}")
+            print(f"    Request failed: {e}")
             if attempt == max_retries - 1:
                 return {}
             time.sleep(5)
@@ -334,4 +334,11 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    SLEEP_SECONDS = 86400  # 24 hours
+    while True:
+        try:
+            main()
+        except Exception as e:
+            print(f"[Settlement Daemon] Run failed with error: {e}. Continuing to next cycle.")
+        print(f"[Settlement Daemon] Sweep complete. Sleeping {SLEEP_SECONDS // 3600} hours until next run...")
+        time.sleep(SLEEP_SECONDS)

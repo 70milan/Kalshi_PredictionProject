@@ -38,7 +38,38 @@ Before finalizing any code, verify:
 2. **Schema Integrity**: Check that the columns expected by the "Silver Layer" (e.g., `ticker`, `yes_bid_dollars`, `ingested_at`) are present.
 3. **Zero-Leaking**: Ensure API keys are loaded via `.env` only.
 
-## 🚨 Use when:
+## No Hardcoded Values
+- NEVER hardcode file paths, usernames, IP addresses, or machine-specific values in any script.
+- All environment-dependent values MUST be read dynamically (e.g., `os.environ.get()`, `os.path.dirname(__file__)`, `.env` files).
+- Use `ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))` for project-relative paths.
+
+## Security & Privacy
+- **Zero personal information**: No references to "Milan Barot" or any personal identifiers in committed code.
+- **Zero API keys**: All secrets MUST be loaded via `.env` and NEVER appear in source code.
+- **Zero test artifacts**: Test result files, debug scripts, scratch outputs, and local-only data MUST NOT be committed.
+- **`.gitignore` is mandatory**: Before ANY git operation, verify `.gitignore` covers:
+  - `data/` (all Bronze/Silver/Gold data)
+  - `.env` and any secret files
+  - `__pycache__/`, `.venv/`, `*.pyc`
+  - Any test output, debug logs, or scratch files
+  - IDE-specific folders (`.idea/`, `.vscode/`)
+
+## Git Workflow Protocol
+The following rules apply to ALL git operations for the entire project lifecycle:
+1. **Git push is ONLY executed on the user's explicit command.** Never auto-push.
+2. **Before ANY commit**, scan all staged files and verify:
+   - No hardcoded paths, usernames, or personal information
+   - No API keys, tokens, or secrets
+   - No test result files or debug scripts
+   - `.gitignore` is up to date for any new file types
+3. **Step-by-step confirmation required:**
+   - Step A: Propose which files to `git add` — wait for user approval
+   - Step B: Propose commit message — wait for user approval
+   - Step C: Execute `git push` — ONLY after user explicitly says to push
+4. Each step requires the user's response before proceeding to the next.
+
+## Use when:
 - Creating new pollers.
 - Refactoring existing ingestion logic.
 - Planning the transition from Bronze to Silver layers.
+- Performing ANY git operations (commit, push, branch).

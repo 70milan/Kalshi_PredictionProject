@@ -5,6 +5,7 @@ import io
 import csv
 import pandas as pd
 import duckdb
+import time
 from datetime import datetime, timezone
 
 # ─────────────────────────────────────────────
@@ -14,6 +15,7 @@ from datetime import datetime, timezone
 GDELT_LASTUPDATE_URL = "http://data.gdeltproject.org/gdeltv2/lastupdate.txt"
 
 # Always write to project root — two levels up from script location
+# Since we are in /ingestion, one level up is the root.
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BRONZE_DIR   = os.path.join(PROJECT_ROOT, "data", "bronze", "gdelt", "gdelt_gkg")
 LAST_URL_FILE = os.path.join(BRONZE_DIR, ".last_url")
@@ -162,7 +164,7 @@ def save_to_bronze(df):
 
 def main():
     print("=" * 65)
-    print("PredictIQ — GDELT GKG Ingestion")
+    print("PredictIQ — GDELT GKG Ingestion (v5)")
     print(f"Run time : {datetime.now(timezone.utc).isoformat()}")
     print("=" * 65)
     
@@ -188,4 +190,12 @@ def main():
     print("=" * 65)
 
 if __name__ == "__main__":
-    main()
+    # Poller loop for background execution
+    while True:
+        try:
+            main()
+        except Exception as e:
+            print(f"CRITICAL ERROR in GKG poller: {e}")
+        
+        print("Sleeping for 900 seconds (15 mins) before next poll...")
+        time.sleep(900)

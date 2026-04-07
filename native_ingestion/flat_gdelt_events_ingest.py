@@ -38,11 +38,14 @@ GDELT_COLUMNS = [
 # Columns to keep for Bronze Layer
 BRONZE_COLUMNS = [
     "GLOBALEVENTID", "SQLDATE", "Actor1Name", "Actor2Name",
+    "Actor1CountryCode", "Actor2CountryCode",
+    "Actor1Type1Code",
+    "IsRootEvent",
     "EventCode", "EventBaseCode", "EventRootCode",
     "GoldsteinScale", "NumMentions", "NumSources", "NumArticles",
     "AvgTone", "Actor1Geo_CountryCode", "Actor2Geo_CountryCode",
     "ActionGeo_CountryCode", "ActionGeo_FullName",
-    "SOURCEURL", "ingested_at"
+    "SOURCEURL", "DATEADDED", "ingested_at"
 ]
 
 # Political EventCode prefixes

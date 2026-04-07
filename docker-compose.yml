@@ -74,6 +74,15 @@ services:
       - .:/app
     command: ["python3", "-u", "ingestion/gdelt_events_ingest.py"]
     working_dir: /app
+
+  ingest-gdelt-gkg:
+    build: .
+    container_name: predictiq_ingest_gdelt_gkg
+    restart: unless-stopped
+    volumes:
+      - .:/app
+    command: ["python3", "-u", "ingestion/gdelt_gkg_ingest.py"]
+    working_dir: /app
     
   ingest-kalshi-active:
     build: .
@@ -95,4 +104,38 @@ services:
     volumes:
       - .:/app
     command: ["python3", "-u", "ingestion/kalshi_daily_settlement.py"]
+    working_dir: /app
+
+  transform-gdelt-events:
+    build: .
+    container_name: predictiq_transform_gdelt_events
+    volumes:
+      - .:/app
+    command: ["python3", "-u", "transformation/silver_gdelt_events_transform.py"]
+    working_dir: /app
+
+  transform-gdelt-gkg:
+    build: .
+    container_name: predictiq_transform_gdelt_gkg
+    volumes:
+      - .:/app
+    command: ["python3", "-u", "transformation/silver_gdelt_gkg_transform.py"]
+    working_dir: /app
+
+  transform-kalshi:
+    build: .
+    container_name: predictiq_transform_kalshi
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+    command: ["python3", "-u", "transformation/silver_kalshi_transform.py"]
+    working_dir: /app
+
+  transform-news:
+    build: .
+    container_name: predictiq_transform_news
+    volumes:
+      - .:/app
+    command: ["python3", "-u", "transformation/silver_news_transform.py"]
     working_dir: /app
