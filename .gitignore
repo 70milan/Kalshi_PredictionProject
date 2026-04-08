@@ -60,5 +60,9 @@ Thumbs.db
 *.tmp
 git_status_output.txt
 
+# PredictIQ Specific Exclusions
+barecode.txt
 housekeeping.py
 dockerize_target.py
+cache_delta_jars.py
+cache_*

@@ -261,6 +261,7 @@ def merge_current(spark, df_spark, silver_current_path):
 def main():
     print("[Silver GDELT Events] Initializing Stable Decoder v5...")
 
+    ivy_dir = os.environ.get("IVY_PACKAGE_DIR", "")
     builder = (
         SparkSession.builder
         .appName("PredictIQ_Silver_GDELT_Events")
@@ -269,6 +270,8 @@ def main():
         .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
         .config("spark.sql.parquet.enableVectorizedReader", "false")
     )
+    if ivy_dir:
+        builder = builder.config("spark.jars.ivy", ivy_dir)
     spark = configure_spark_with_delta_pip(builder).getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
 
@@ -325,4 +328,17 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import time
+    import traceback
+
+    print("[Silver GDELT Events] Docker Polling Service Initialized (5-min intervals).")
+    while True:
+        try:
+            main()
+            print("[Silver GDELT Events] Run complete. Sleeping for 300 seconds...")
+        except Exception:
+            print("[Silver GDELT Events] LOOP ERROR detected:")
+            traceback.print_exc()
+            print("[Silver GDELT Events] Sleeping for 300 seconds before retry...")
+        
+        time.sleep(300)

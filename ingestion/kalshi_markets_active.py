@@ -272,4 +272,18 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import time
+    import traceback
+
+    SLEEP_SECONDS = 900  # 15 minutes
+    
+    print("[Kalshi Active] Polling Daemon Initialized (15-min intervals).")
+    while True:
+        try:
+            main()
+        except Exception:
+            print("[Kalshi Active] FATAL ERROR in main loop:")
+            traceback.print_exc()
+            
+        print(f"\n[Kalshi Active] Poll complete. Sleeping {SLEEP_SECONDS // 60} minutes...")
+        time.sleep(SLEEP_SECONDS)

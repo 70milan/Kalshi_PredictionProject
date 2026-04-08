@@ -130,12 +130,15 @@ def write_history(spark, df, silver_history):
 
 def main():
     print("[Silver Kalshi] Initializing PySpark Session...")
+    ivy_dir = os.environ.get("IVY_PACKAGE_DIR", "")
     builder = SparkSession.builder \
         .appName("PredictIQ_Silver_Kalshi") \
         .config("spark.driver.memory", "4g") \
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension") \
         .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog") \
         .config("spark.sql.parquet.enableVectorizedReader", "false")
+    if ivy_dir:
+        builder = builder.config("spark.jars.ivy", ivy_dir)
 
     spark = configure_spark_with_delta_pip(builder).getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
@@ -178,4 +181,17 @@ def main():
         spark.stop()
 
 if __name__ == "__main__":
-    main()
+    import time
+    import traceback
+
+    print("[Silver Kalshi] Docker Polling Service Initialized (5-min intervals).")
+    while True:
+        try:
+            main()
+            print("[Silver Kalshi] Run complete. Sleeping for 300 seconds...")
+        except Exception:
+            print("[Silver Kalshi] LOOP ERROR detected:")
+            traceback.print_exc()
+            print("[Silver Kalshi] Sleeping for 300 seconds before retry...")
+        
+        time.sleep(300)

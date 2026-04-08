@@ -156,6 +156,7 @@ def enrich_on_driver(pdf):
 def main():
     print("[Silver News] Initializing PySpark Session...")
 
+    ivy_dir = os.environ.get("IVY_PACKAGE_DIR", "")
     builder = (
         SparkSession.builder
         .appName("PredictIQ_Silver_News")
@@ -165,6 +166,8 @@ def main():
         .config("spark.sql.parquet.enableVectorizedReader", "false")
         .config("spark.sql.execution.arrow.pyspark.enabled", "false")
     )
+    if ivy_dir:
+        builder = builder.config("spark.jars.ivy", ivy_dir)
 
     spark = configure_spark_with_delta_pip(builder).getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
@@ -267,4 +270,17 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import time
+    import traceback
+
+    print("[Silver News] Docker Polling Service Initialized (5-min intervals).")
+    while True:
+        try:
+            main()
+            print("[Silver News] Run complete. Sleeping for 300 seconds...")
+        except Exception:
+            print("[Silver News] LOOP ERROR detected:")
+            traceback.print_exc()
+            print("[Silver News] Sleeping for 300 seconds before retry...")
+        
+        time.sleep(300)
