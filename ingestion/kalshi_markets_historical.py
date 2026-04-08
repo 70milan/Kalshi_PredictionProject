@@ -44,9 +44,8 @@ TEXT_EXCLUDE = [
     "snow", "weather", "temperature", "rainfall",
 ]
 
-# No practical cap — fetch everything for historical backfill
-MAX_PAGES_PER_SERIES = 500  # 500 × 200 = 100,000 per series max
-PAGE_SIZE            = 200
+MAX_PAGES  = 500   # 500 × 200 = 100,000 markets cap per status
+PAGE_SIZE  = 200
 
 
 # ─────────────────────────────────────────────
@@ -96,74 +95,39 @@ def get(path: str, params: dict = None, max_retries: int = 5) -> dict:
 
 
 # ─────────────────────────────────────────────
-# STEP 1 — GET ALL POLITICAL SERIES
-# No status=open — we need resolved series too
-# because their markets have historical data
+# STEP 1 — BULK FETCH ALL MARKETS BY STATUS
+# O(N_pages) instead of O(N_series)
 # ─────────────────────────────────────────────
 
-def fetch_political_series() -> list:
+def fetch_markets_bulk(status: str) -> list:
     """
-    Fetch all series with no status filter to include resolved ones.
-    Filter to political categories only.
+    Single paginated sweep of GET /markets?status={status}&limit=200.
+    No series_ticker filter — fetches everything, then we filter locally.
     """
-    print(f"\n📋 Fetching all series (including resolved)...")
-    data   = get(SERIES_ENDPOINT)
-    series = data.get("series", [])
-    print(f"   Total series found: {len(series)}")
-
-    political = []
-    for s in series:
-        category = (s.get("category", "") or "").strip()
-        title    = (s.get("title",    "") or "").lower()
-        ticker   = (s.get("ticker",   "") or "")
-
-        if category not in TARGET_CATEGORIES:
-            continue
-
-        if any(ex in title for ex in TEXT_EXCLUDE):
-            continue
-
-        political.append(ticker)
-
-    print(f"   Political series to process: {len(political)}")
-    return political
-
-
-# ─────────────────────────────────────────────
-# STEP 2 — FETCH MARKETS FOR ONE SERIES + STATUS
-# ─────────────────────────────────────────────
-
-def fetch_markets_for_series(series_ticker: str, status: str) -> list:
-    """
-    Fetch all markets of a given status for one series ticker.
-    Paginates until no cursor returned or page cap hit.
-    """
-    markets    = []
-    cursor     = None
-    page_count = 0
+    all_markets = []
+    cursor = None
+    page = 0
 
     while True:
-        page_count += 1
-
-        if page_count > MAX_PAGES_PER_SERIES:
-            print(f"      ⚠️  Hit page limit for {series_ticker} [{status}]")
+        page += 1
+        if page > MAX_PAGES:
+            print(f"   ⚠️  Hit page cap ({MAX_PAGES}) for status={status}.")
             break
 
-        params = {
-            "limit":         PAGE_SIZE,
-            "status":        status,
-            "series_ticker": series_ticker,
-        }
+        params = {"limit": PAGE_SIZE, "status": status}
         if cursor:
             params["cursor"] = cursor
 
-        data  = get(MARKETS_ENDPOINT, params)
+        data = get(MARKETS_ENDPOINT, params)
         batch = data.get("markets", [])
 
         if not batch:
             break
 
-        markets.extend(batch)
+        all_markets.extend(batch)
+
+        if page % 10 == 0:
+            print(f"   [{status}] Page {page}: running total {len(all_markets)}")
 
         cursor = data.get("cursor")
         if not cursor:
@@ -171,68 +135,86 @@ def fetch_markets_for_series(series_ticker: str, status: str) -> list:
 
         time.sleep(0.3)
 
-    return markets
+    print(f"   [{status}] Fetched {len(all_markets)} total markets in {page} pages")
+    return all_markets
 
 
 # ─────────────────────────────────────────────
-# STEP 3 — SINGLE LOOP: BOTH STATUSES PER SERIES
-# Cuts run time in half vs two separate passes
+# STEP 2 — BUILD CATEGORY LOOKUP FROM /series
+# Single API call → {series_ticker: category}
 # ─────────────────────────────────────────────
 
-def fetch_all_historical(series_tickers: list) -> tuple:
+def build_category_lookup() -> dict:
     """
-    Single loop through all series.
-    Fetches BOTH closed and settled markets per series in one pass.
+    One call to /series (no status filter, includes resolved) —
+    builds a lookup dict so we can filter bulk markets by category.
+    """
+    data = get(SERIES_ENDPOINT)
+    series = data.get("series", [])
+    lookup = {}
+    for s in series:
+        ticker   = s.get("ticker", "")
+        category = (s.get("category", "") or "").strip()
+        lookup[ticker] = category
+    print(f"   Series lookup built: {len(lookup)} entries")
+    return lookup
+
+
+# ─────────────────────────────────────────────
+# STEP 3 — LOCAL FILTER FOR POLITICS
+# ─────────────────────────────────────────────
+
+def filter_political(markets: list, category_lookup: dict) -> list:
+    """
+    Client-side filter: keep only political markets,
+    exclude mislabeled sports/weather/entertainment.
+    """
+    political = []
+    for m in markets:
+        series_ticker = m.get("series_ticker", "")
+        category = (m.get("category", "") or "").strip()
+        if not category:
+            category = category_lookup.get(series_ticker, "")
+
+        if category not in TARGET_CATEGORIES:
+            continue
+
+        title = (m.get("title", "") or "").lower()
+        if any(ex in title for ex in TEXT_EXCLUDE):
+            continue
+
+        political.append(m)
+
+    return political
+
+
+# ─────────────────────────────────────────────
+# STEP 4 — BULK FETCH BOTH STATUSES
+# ─────────────────────────────────────────────
+
+def fetch_all_historical(category_lookup: dict) -> tuple:
+    """
+    Bulk fetch ALL closed and settled markets, filter locally.
+    ~50 API calls total instead of ~3,600 per-series calls.
     Returns two separate lists: (closed_markets, settled_markets)
     """
-    all_closed  = []
-    all_settled = []
     ingested_at = datetime.now(timezone.utc).isoformat()
 
-    closed_series_count  = 0
-    settled_series_count = 0
+    print(f"\n📡 Bulk-fetching closed markets...")
+    raw_closed = fetch_markets_bulk("closed")
+    all_closed = filter_political(raw_closed, category_lookup)
+    for m in all_closed:
+        m["ingested_at"]   = ingested_at
+        m["status_pulled"] = "closed"
+    print(f"   Closed: {len(raw_closed)} total → {len(all_closed)} political")
 
-    print(f"\n📡 Processing {len(series_tickers)} political series (closed + settled in one pass)...")
-    print(f"   This will take a while — grab a coffee.\n")
-
-    for i, ticker in enumerate(series_tickers, 1):
-
-        # Fetch closed markets for this series
-        closed = fetch_markets_for_series(ticker, "closed")
-        if closed:
-            for m in closed:
-                m["ingested_at"]   = ingested_at
-                m["series_ticker"] = ticker
-                m["status_pulled"] = "closed"
-            all_closed.extend(closed)
-            closed_series_count += 1
-
-        # Fetch settled markets for this series
-        settled = fetch_markets_for_series(ticker, "settled")
-        if settled:
-            for m in settled:
-                m["ingested_at"]   = ingested_at
-                m["series_ticker"] = ticker
-                m["status_pulled"] = "settled"
-            all_settled.extend(settled)
-            settled_series_count += 1
-
-        # Only print progress when something was found
-        if closed or settled:
-            closed_label  = f"{len(closed)} closed"   if closed  else "—"
-            settled_label = f"{len(settled)} settled"  if settled else "—"
-            print(f"   [{i:>4}/{len(series_tickers)}] {ticker:<35} | {closed_label:<12} | {settled_label}")
-
-        # Progress ping every 100 series regardless
-        elif i % 100 == 0:
-            print(f"   [{i:>4}/{len(series_tickers)}] ... {i} series checked, "
-                  f"{len(all_closed)} closed + {len(all_settled)} settled so far")
-
-        time.sleep(0.3)
-
-    print(f"\n   ✅ Pass complete.")
-    print(f"   Closed  — {len(all_closed):>6} markets from {closed_series_count} series")
-    print(f"   Settled — {len(all_settled):>6} markets from {settled_series_count} series")
+    print(f"\n📡 Bulk-fetching settled markets...")
+    raw_settled = fetch_markets_bulk("settled")
+    all_settled = filter_political(raw_settled, category_lookup)
+    for m in all_settled:
+        m["ingested_at"]   = ingested_at
+        m["status_pulled"] = "settled"
+    print(f"   Settled: {len(raw_settled)} total → {len(all_settled)} political")
 
     return all_closed, all_settled
 
@@ -326,24 +308,21 @@ def verify_saved(closed_path: str, settled_path: str):
 
 def main():
     print("=" * 65)
-    print("PredictIQ — Kalshi Historical Backfill (ONE-TIME)")
+    print("PredictIQ — Kalshi Historical Backfill (ONE-TIME)  [BULK v2]")
     print(f"Run time    : {datetime.now(timezone.utc).isoformat()}")
     print(f"Categories  : {', '.join(TARGET_CATEGORIES)}")
     print(f"Closed dir  : {CLOSED_DIR}")
     print(f"Settled dir : {SETTLED_DIR}")
-    print(f"Page cap    : {MAX_PAGES_PER_SERIES} per series per status")
+    print(f"Page cap    : {MAX_PAGES} per status")
     print("=" * 65)
     print("\n⚠️  ONE-TIME run. Do not interrupt — files save at the end.")
-    print("   Estimated time: 15-25 minutes.\n")
 
-    # 1. Get all political series (including resolved)
-    series_tickers = fetch_political_series()
-    if not series_tickers:
-        print("⚠️  No political series found. Check TARGET_CATEGORIES.")
-        return
+    # 1. Build category lookup (1 API call)
+    print("\n📋 Building series → category lookup...")
+    category_lookup = build_category_lookup()
 
-    # 2. Single loop — fetch closed + settled per series
-    closed_markets, settled_markets = fetch_all_historical(series_tickers)
+    # 2. Bulk fetch closed + settled, filter locally
+    closed_markets, settled_markets = fetch_all_historical(category_lookup)
 
     closed_path  = None
     settled_path = None

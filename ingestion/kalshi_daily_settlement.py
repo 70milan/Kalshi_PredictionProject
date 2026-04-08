@@ -47,8 +47,8 @@ TEXT_EXCLUDE = [
     "snow", "weather", "temperature", "rainfall",
 ]
 
-MAX_PAGES_PER_SERIES = 20  # Daily run: should need at most 1-2 pages per series
-PAGE_SIZE            = 200
+MAX_PAGES  = 500   # 500 × 200 = 100,000 markets cap per status
+PAGE_SIZE  = 200
 
 
 # ─────────────────────────────────────────────
@@ -98,87 +98,39 @@ def get(path: str, params: dict = None, max_retries: int = 5) -> dict:
 
 
 # ─────────────────────────────────────────────
-# STEP 1 — GET ALL POLITICAL SERIES (OPEN + RESOLVED)
+# STEP 1 — BULK FETCH ALL MARKETS BY STATUS
+# O(N_pages) instead of O(N_series)
 # ─────────────────────────────────────────────
 
-def fetch_political_series() -> list:
+def fetch_markets_bulk(status: str) -> list:
     """
-    Fetch all series — no status filter — so we catch
-    newly resolved series that settled today.
+    Single paginated sweep of GET /markets?status={status}&limit=200.
+    No series_ticker filter — fetches everything, then we filter locally.
     """
-    data   = get(SERIES_ENDPOINT)
-    series = data.get("series", [])
-
-    political = []
-    for s in series:
-        category = (s.get("category", "") or "").strip()
-        title    = (s.get("title",    "") or "").lower()
-        ticker   = (s.get("ticker",   "") or "")
-
-        if category not in TARGET_CATEGORIES:
-            continue
-        if any(ex in title for ex in TEXT_EXCLUDE):
-            continue
-
-        political.append(ticker)
-
-    print(f"   Political series found: {len(political)}")
-    return political
-
-
-# ─────────────────────────────────────────────
-# STEP 2 — FETCH RECENT MARKETS FOR ONE SERIES + STATUS
-# Only returns markets settled/closed within cutoff_ts
-# ─────────────────────────────────────────────
-
-def fetch_recent_markets(series_ticker: str, status: str, cutoff_ts: str) -> list:
-    """
-    Fetch recently settled/closed markets for a given series.
-    Paginates until we see markets older than the 24-hour cutoff.
-    """
-    markets    = []
-    cursor     = None
-    page_count = 0
+    all_markets = []
+    cursor = None
+    page = 0
 
     while True:
-        page_count += 1
-        if page_count > MAX_PAGES_PER_SERIES:
+        page += 1
+        if page > MAX_PAGES:
+            print(f"   ⚠️  Hit page cap ({MAX_PAGES}) for status={status}.")
             break
 
-        params = {
-            "limit":         PAGE_SIZE,
-            "status":        status,
-            "series_ticker": series_ticker,
-        }
+        params = {"limit": PAGE_SIZE, "status": status}
         if cursor:
             params["cursor"] = cursor
 
-        data  = get(MARKETS_ENDPOINT, params)
+        data = get(MARKETS_ENDPOINT, params)
         batch = data.get("markets", [])
 
         if not batch:
             break
 
-        new_markets = []
-        stop_early  = False
+        all_markets.extend(batch)
 
-        for m in batch:
-            # Use settlement_ts or close_time to determine recency
-            ts_str = (
-                m.get("settlement_ts") or
-                m.get("close_time")    or
-                ""
-            )
-            if ts_str and ts_str < cutoff_ts:
-                # This market and all subsequent are older than our window
-                stop_early = True
-                break
-            new_markets.append(m)
-
-        markets.extend(new_markets)
-
-        if stop_early:
-            break
+        if page % 10 == 0:
+            print(f"   [{status}] Page {page}: running total {len(all_markets)}")
 
         cursor = data.get("cursor")
         if not cursor:
@@ -186,53 +138,94 @@ def fetch_recent_markets(series_ticker: str, status: str, cutoff_ts: str) -> lis
 
         time.sleep(0.3)
 
-    return markets
+    print(f"   [{status}] Fetched {len(all_markets)} total markets in {page} pages")
+    return all_markets
 
 
 # ─────────────────────────────────────────────
-# STEP 3 — SWEEP ALL SERIES FOR RECENT SETTLEMENTS
+# STEP 2 — BUILD CATEGORY LOOKUP FROM /series
+# Single API call → {series_ticker: category}
 # ─────────────────────────────────────────────
 
-def fetch_todays_settlements(series_tickers: list, cutoff_ts: str) -> tuple:
+def build_category_lookup() -> dict:
     """
-    Single pass through all political series.
-    Captures anything that settled/closed in the last 24 hours.
+    One call to /series (no status filter) — builds a lookup dict
+    so we can filter bulk markets by category locally.
     """
-    all_closed  = []
-    all_settled = []
+    data = get(SERIES_ENDPOINT)
+    series = data.get("series", [])
+    lookup = {}
+    for s in series:
+        ticker   = s.get("ticker", "")
+        category = (s.get("category", "") or "").strip()
+        lookup[ticker] = category
+    print(f"   Series lookup built: {len(lookup)} entries")
+    return lookup
+
+
+# ─────────────────────────────────────────────
+# STEP 3 — LOCAL FILTER: POLITICS + RECENCY
+# ─────────────────────────────────────────────
+
+def filter_political_recent(markets: list, category_lookup: dict, cutoff_ts: str) -> list:
+    """
+    Client-side filter:
+      1. Category must be Politics (from market or series lookup)
+      2. Title must not match TEXT_EXCLUDE
+      3. Settlement/close time must be after cutoff_ts (last 24h)
+    """
+    filtered = []
+    for m in markets:
+        series_ticker = m.get("series_ticker", "")
+        category = (m.get("category", "") or "").strip()
+        if not category:
+            category = category_lookup.get(series_ticker, "")
+
+        if category not in TARGET_CATEGORIES:
+            continue
+
+        title = (m.get("title", "") or "").lower()
+        if any(ex in title for ex in TEXT_EXCLUDE):
+            continue
+
+        # Recency check — only keep markets settled/closed after cutoff
+        ts_str = m.get("settlement_ts") or m.get("close_time") or ""
+        if ts_str and ts_str < cutoff_ts:
+            continue
+
+        filtered.append(m)
+
+    return filtered
+
+
+# ─────────────────────────────────────────────
+# STEP 4 — SWEEP BOTH STATUSES IN BULK
+# ─────────────────────────────────────────────
+
+def fetch_todays_settlements(category_lookup: dict, cutoff_ts: str) -> tuple:
+    """
+    Bulk fetch settled + closed markets, filter locally.
+    ~50 API calls total instead of ~3,600 per-series calls.
+    """
     ingested_at = datetime.now(timezone.utc).isoformat()
 
-    print(f"\n   Sweeping {len(series_tickers)} series for markets settled after {cutoff_ts[:10]}...\n")
+    print(f"\n   Bulk-fetching settled markets...")
+    raw_settled = fetch_markets_bulk("settled")
+    settled = filter_political_recent(raw_settled, category_lookup, cutoff_ts)
+    for m in settled:
+        m["ingested_at"]   = ingested_at
+        m["status_pulled"] = "settled"
+    print(f"   Settled: {len(raw_settled)} total → {len(settled)} political + recent")
 
-    for i, ticker in enumerate(series_tickers, 1):
+    print(f"\n   Bulk-fetching closed markets...")
+    raw_closed = fetch_markets_bulk("closed")
+    closed = filter_political_recent(raw_closed, category_lookup, cutoff_ts)
+    for m in closed:
+        m["ingested_at"]   = ingested_at
+        m["status_pulled"] = "closed"
+    print(f"   Closed: {len(raw_closed)} total → {len(closed)} political + recent")
 
-        closed = fetch_recent_markets(ticker, "closed", cutoff_ts)
-        if closed:
-            for m in closed:
-                m["ingested_at"]   = ingested_at
-                m["series_ticker"] = ticker
-                m["status_pulled"] = "closed"
-            all_closed.extend(closed)
-
-        settled = fetch_recent_markets(ticker, "settled", cutoff_ts)
-        if settled:
-            for m in settled:
-                m["ingested_at"]   = ingested_at
-                m["series_ticker"] = ticker
-                m["status_pulled"] = "settled"
-            all_settled.extend(settled)
-
-        if closed or settled:
-            closed_label  = f"{len(closed)} closed"   if closed  else "—"
-            settled_label = f"{len(settled)} settled"  if settled else "—"
-            print(f"\r   [{i:>4}/{len(series_tickers)}] {ticker:<35} | {closed_label:<12} | {settled_label}          ", flush=True)
-
-        else:
-            print(f"\r   [{i:>4}/{len(series_tickers)}] {ticker:<35} | checking...          ", end="", flush=True)
-
-        time.sleep(0.3)
-
-    return all_closed, all_settled
+    return closed, settled
 
 
 # ─────────────────────────────────────────────
@@ -291,22 +284,19 @@ def main():
     cutoff   = (run_ts - timedelta(hours=24)).isoformat()
 
     print("=" * 65)
-    print("PredictIQ — Kalshi Daily Settlement Sweeper")
+    print("PredictIQ — Kalshi Daily Settlement Sweeper  [BULK v2]")
     print(f"Run time  : {run_ts.isoformat()}")
     print(f"Cutoff    : {cutoff}  (last 24 hours)")
     print(f"Settled   : {SETTLED_DIR}")
     print(f"Closed    : {CLOSED_DIR}")
     print("=" * 65)
 
-    # 1. Get all political series
-    print("\n   Fetching political series...")
-    series_tickers = fetch_political_series()
-    if not series_tickers:
-        print("   No political series found. Check TARGET_CATEGORIES.")
-        return
+    # 1. Build category lookup (1 API call)
+    print("\n📋 Building series → category lookup...")
+    category_lookup = build_category_lookup()
 
-    # 2. Sweep for today's settlements
-    closed_markets, settled_markets = fetch_todays_settlements(series_tickers, cutoff)
+    # 2. Bulk fetch + filter for both statuses
+    closed_markets, settled_markets = fetch_todays_settlements(category_lookup, cutoff)
 
     total = len(closed_markets) + len(settled_markets)
     print(f"\n   Sweep complete — {len(closed_markets)} closed + {len(settled_markets)} settled found today.")
