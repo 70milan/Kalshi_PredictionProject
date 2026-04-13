@@ -34,7 +34,7 @@ def get_watermark(spark, silver_path):
     return None
 
 # Columns that DuckDB writes as BIGINT from some API runs but DOUBLE from others
-TYPE_CONFLICT_COLS = ["floor_strike", "cap_strike"]
+TYPE_CONFLICT_COLS = ["floor_strike", "cap_strike", "yes_bid_dollars", "yes_ask_dollars", "yes_bid", "yes_ask"]
 
 def normalize_types(df):
     """
@@ -55,6 +55,8 @@ def read_bronze_incremental(spark, bronze_base, watermark):
     all_files = []
     for r, d, f in os.walk(bronze_base):
         for filename in fnmatch.filter(f, '*.parquet'):
+            if filename == "latest.parquet":
+                continue
             all_files.append(os.path.join(r, filename))
 
     if not all_files:
@@ -81,7 +83,25 @@ def transform(df):
     """
     Silver transformation specific to Kalshi.
     Casts ingested_at to true TimestampType to ensure robust watermark filtering.
+    Standardizes row naming from V2 (_dollars) to legacy naming.
     """
+    # 1. Standardize V2 Naming to Legacy naming for downstream compatibility
+    cols = df.columns
+    # Defensive: If both exist (schema merge conflict), prioritize the V2 dollar columns
+    if "yes_bid_dollars" in cols and "yes_bid" in cols:
+        df = df.drop("yes_bid")
+    if "yes_bid_dollars" in cols:
+        df = df.withColumnRenamed("yes_bid_dollars", "yes_bid")
+
+    if "yes_ask_dollars" in cols and "yes_ask" in cols:
+        df = df.drop("yes_ask")
+    if "yes_ask_dollars" in cols:
+        df = df.withColumnRenamed("yes_ask_dollars", "yes_ask")
+    
+    # 2. Normalize types (ensure prices are doubles)
+    df = normalize_types(df)
+
+    # 3. Handle Timestamps
     return df.withColumn(
         "ingested_at",
         F.to_timestamp(F.col("ingested_at"))
@@ -97,12 +117,16 @@ def write_current(spark, df, silver_current):
     latest_df = df.withColumn("rn", F.row_number().over(windowSpec)).filter(F.col("rn") == 1).drop("rn")
 
     if os.path.exists(os.path.join(silver_current, "_delta_log")):
-        delta_table = DeltaTable.forPath(spark, silver_current)
-        delta_table.alias("target") \
-            .merge(latest_df.alias("source"), "target.ticker = source.ticker") \
-            .whenMatchedUpdateAll() \
-            .whenNotMatchedInsertAll() \
-            .execute()
+        try:
+            delta_table = DeltaTable.forPath(spark, silver_current)
+            delta_table.alias("target") \
+                .merge(latest_df.alias("source"), "target.ticker = source.ticker") \
+                .whenMatchedUpdateAll() \
+                .whenNotMatchedInsertAll() \
+                .execute()
+        except Exception as e:
+            print(f"[Silver Kalshi] Current table corrupted, rebuilding: {e}")
+            latest_df.write.format("delta").mode("overwrite").option("mergeSchema", "true").save(silver_current)
     else:
         latest_df.write.format("delta").mode("overwrite").option("mergeSchema", "true").save(silver_current)
 
@@ -181,17 +205,4 @@ def main():
         spark.stop()
 
 if __name__ == "__main__":
-    import time
-    import traceback
-
-    print("[Silver Kalshi] Docker Polling Service Initialized (5-min intervals).")
-    while True:
-        try:
-            main()
-            print("[Silver Kalshi] Run complete. Sleeping for 300 seconds...")
-        except Exception:
-            print("[Silver Kalshi] LOOP ERROR detected:")
-            traceback.print_exc()
-            print("[Silver Kalshi] Sleeping for 300 seconds before retry...")
-        
-        time.sleep(300)
+    main()

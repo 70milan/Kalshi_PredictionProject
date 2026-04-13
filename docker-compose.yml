@@ -1,17 +1,22 @@
 services:
+  # ─────────────────────────────────────────────
+  # SPARK ETL ORCHESTRATOR (1 container, sequential)
+  # Runs all Silver + Gold transforms inside ONE JVM.
+  # ─────────────────────────────────────────────
   spark-app:
     build: .
-    container_name: prediction_intelligence_app
-    volumes:
-      - .:/app
+    container_name: predictiq_spark_etl
+    restart: unless-stopped
     env_file:
       - .env
-    environment:
-      - PYSPARK_PYTHON=python3
-      - PYSPARK_DRIVER_PYTHON=python3
-    command: ["tail", "-f", "/dev/null"]
+    volumes:
+      - .:/app
+    command: ["python3", "-u", "transformation/run_etl.py"]
     working_dir: /app
 
+  # ─────────────────────────────────────────────
+  # BRONZE INGESTORS (9 lightweight Python daemons)
+  # ─────────────────────────────────────────────
   ingest-bbc:
     build: .
     container_name: predictiq_ingest_bbc
@@ -83,7 +88,7 @@ services:
       - .:/app
     command: ["python3", "-u", "ingestion/gdelt_gkg_ingest.py"]
     working_dir: /app
-    
+
   ingest-kalshi-active:
     build: .
     container_name: predictiq_ingest_kalshi_active
@@ -93,49 +98,4 @@ services:
     volumes:
       - .:/app
     command: ["python3", "-u", "ingestion/kalshi_markets_active.py"]
-    working_dir: /app
-
-  ingest-kalshi-daily:
-    build: .
-    container_name: predictiq_ingest_kalshi_daily
-    restart: unless-stopped
-    env_file:
-      - .env
-    volumes:
-      - .:/app
-    command: ["python3", "-u", "ingestion/kalshi_daily_settlement.py"]
-    working_dir: /app
-
-  transform-gdelt-events:
-    build: .
-    container_name: predictiq_transform_gdelt_events
-    volumes:
-      - .:/app
-    command: ["python3", "-u", "transformation/silver_gdelt_events_transform.py"]
-    working_dir: /app
-
-  transform-gdelt-gkg:
-    build: .
-    container_name: predictiq_transform_gdelt_gkg
-    volumes:
-      - .:/app
-    command: ["python3", "-u", "transformation/silver_gdelt_gkg_transform.py"]
-    working_dir: /app
-
-  transform-kalshi:
-    build: .
-    container_name: predictiq_transform_kalshi
-    env_file:
-      - .env
-    volumes:
-      - .:/app
-    command: ["python3", "-u", "transformation/silver_kalshi_transform.py"]
-    working_dir: /app
-
-  transform-news:
-    build: .
-    container_name: predictiq_transform_news
-    volumes:
-      - .:/app
-    command: ["python3", "-u", "transformation/silver_news_transform.py"]
     working_dir: /app

@@ -66,6 +66,26 @@ def generate_gdelt_summaries(spark, gkg_path, events_path):
             ).filter(F.col("entity_name").rlike("^[A-Z0-9_]+$")) # Themes are ALL CAPS with underscores
             mentions_dfs.append(gkg_themes)
 
+        # Explode Organizations
+        if "organizations_array" in df_gkg_7d.columns:
+            gkg_orgs = df_gkg_7d.select(
+                F.explode("organizations_array").alias("entity_name"),
+                F.col("tone"),
+                F.lit("organization").alias("entity_type"),
+                F.lit(1.0).alias("mentions")
+            ).filter(F.col("entity_name").rlike("^[A-Za-z0-9 ]+$"))
+            mentions_dfs.append(gkg_orgs)
+
+        # Explode Locations
+        if "locations_array" in df_gkg_7d.columns:
+            gkg_locations = df_gkg_7d.select(
+                F.explode("locations_array").alias("entity_name"),
+                F.col("tone"),
+                F.lit("location").alias("entity_type"),
+                F.lit(1.0).alias("mentions")
+            ).filter(F.col("entity_name").rlike("^[A-Za-z0-9 ,]+$"))
+            mentions_dfs.append(gkg_locations)
+
     # 2. Process Events History
     if log_events:
         df_events = spark.read.format("delta").load(events_path)
@@ -147,17 +167,5 @@ def main():
         spark.stop()
 
 if __name__ == "__main__":
-    import time
-    import traceback
+    main()
 
-    print("[Gold GDELT] Docker Polling Service Initialized (5-min intervals).")
-    while True:
-        try:
-            main()
-            print("[Gold GDELT] Run complete. Sleeping for 300 seconds...")
-        except Exception:
-            print("[Gold GDELT] LOOP ERROR detected:")
-            traceback.print_exc()
-            print("[Gold GDELT] Sleeping for 300 seconds before retry...")
-        
-        time.sleep(300)

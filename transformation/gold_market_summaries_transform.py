@@ -23,17 +23,13 @@ def calculate_odds_deltas(df):
     Calculates velocity metrics over 15-minute, 1-hour, and 24-hour windows.
     Assumes data is ingested every 15 minutes.
     """
-    # Ensure yes_bid and volume are double types for clean math
+    # Ensure critical price columns are double types for clean delta math
     cols = df.columns
-    if "yes_bid" in cols:
-        df = df.withColumn("yes_bid", F.col("yes_bid").cast("double"))
-    else:
-        df = df.withColumn("yes_bid", F.lit(0.0).cast("double"))
-        
-    if "volume" in cols:
-        df = df.withColumn("volume", F.col("volume").cast("double"))
-    else:
-        df = df.withColumn("volume", F.lit(0.0).cast("double"))
+    for c in ["yes_bid", "yes_ask", "volume"]:
+        if c in cols:
+            df = df.withColumn(c, F.col(c).cast("double"))
+        else:
+            df = df.withColumn(c, F.lit(0.0).cast("double"))
 
     window_spec = Window.partitionBy("ticker").orderBy("ingested_at")
     
@@ -143,17 +139,5 @@ def main():
         spark.stop()
 
 if __name__ == "__main__":
-    import time
-    import traceback
+    main()
 
-    print("[Gold Kalshi] Docker Polling Service Initialized (5-min intervals).")
-    while True:
-        try:
-            main()
-            print("[Gold Kalshi] Run complete. Sleeping for 300 seconds...")
-        except Exception:
-            print("[Gold Kalshi] LOOP ERROR detected:")
-            traceback.print_exc()
-            print("[Gold Kalshi] Sleeping for 300 seconds before retry...")
-        
-        time.sleep(300)

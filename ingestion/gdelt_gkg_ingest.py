@@ -14,9 +14,8 @@ from datetime import datetime, timezone
 
 GDELT_LASTUPDATE_URL = "http://data.gdeltproject.org/gdeltv2/lastupdate.txt"
 
-# Always write to project root — two levels up from script location
-# Since we are in /ingestion, one level up is the root.
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Docker: /app is the project root (volume-mounted)
+PROJECT_ROOT = "/app"
 BRONZE_DIR   = os.path.join(PROJECT_ROOT, "data", "bronze", "gdelt", "gdelt_gkg")
 LAST_URL_FILE = os.path.join(BRONZE_DIR, ".last_url")
 

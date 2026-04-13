@@ -94,7 +94,7 @@ def load_bronze_chunked(spark, bronze_files, watermark):
     # Union all filtered slices — only new rows are in memory at this point
     result = filtered_dfs[0]
     for df in filtered_dfs[1:]:
-        result = result.union(df)
+        result = result.unionByName(df, allowMissingColumns=True)
 
     return result
 
@@ -283,17 +283,4 @@ def main():
 
 
 if __name__ == "__main__":
-    import time
-    import traceback
-
-    print("[Silver GDELT GKG] Docker Polling Service Initialized (5-min intervals).")
-    while True:
-        try:
-            main()
-            print("[Silver GDELT GKG] Run complete. Sleeping for 300 seconds...")
-        except Exception:
-            print("[Silver GDELT GKG] LOOP ERROR detected:")
-            traceback.print_exc()
-            print("[Silver GDELT GKG] Sleeping for 300 seconds before retry...")
-        
-        time.sleep(300)
+    main()

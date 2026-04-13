@@ -22,8 +22,8 @@ BASE_URL   = "https://api.elections.kalshi.com"
 MARKETS_ENDPOINT = "/trade-api/v2/markets"
 SERIES_ENDPOINT  = "/trade-api/v2/series"
 
-# Docker: /app is the project root (volume-mounted)
-PROJECT_ROOT = "/app"
+# Resolve dynamically based on script location (works in Docker and Windows native)
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BRONZE_DIR   = os.path.join(PROJECT_ROOT, "data", "bronze", "kalshi_markets", "open")
 
 # Categories to pull from /series endpoint
@@ -39,8 +39,8 @@ TEXT_EXCLUDE = [
     "snow", "weather", "temperature", "rainfall",
 ]
 
-MAX_PAGES  = 200   # 200 × 200 = 40,000 markets cap — generous safety limit
-PAGE_SIZE  = 200
+MAX_PAGES_PER_SERIES = 10   # 10 × 200 = 2,000 per series max
+PAGE_SIZE            = 200
 
 
 # ─────────────────────────────────────────────
@@ -91,38 +91,63 @@ def get(path: str, params: dict = None, max_retries: int = 5) -> dict:
 
 
 # ─────────────────────────────────────────────
-# STEP 1 — BULK FETCH ALL OPEN MARKETS
-# O(N_pages) instead of O(N_series)
+# STEP 1 — GET OPEN POLITICAL SERIES
 # ─────────────────────────────────────────────
 
-def fetch_all_open_markets() -> list:
+def fetch_political_series() -> list:
     """
-    Single paginated sweep of GET /markets?status=open&limit=200.
-    No series_ticker filter — fetches everything in ~15-25 API calls
-    instead of ~1,800 per-series calls.
+    Fetch only open series — status=open skips resolved/dead series.
+    Filter to Politics category only.
     """
-    all_markets = []
-    cursor = None
-    page = 0
+    data   = get(SERIES_ENDPOINT, params={"status": "open"})
+    series = data.get("series", [])
+
+    political = []
+    for s in series:
+        category = (s.get("category", "") or "").strip()
+        title    = (s.get("title",    "") or "").lower()
+        ticker   = (s.get("ticker",   "") or "")
+
+        if category not in TARGET_CATEGORIES:
+            continue
+        if any(ex in title for ex in TEXT_EXCLUDE):
+            continue
+
+        political.append(ticker)
+
+    print(f"   Series found: {len(series)} total → {len(political)} political")
+    return political
+
+
+# ─────────────────────────────────────────────
+# STEP 2 — FETCH OPEN MARKETS PER SERIES
+# ─────────────────────────────────────────────
+
+def fetch_markets_for_series(series_ticker: str) -> list:
+    markets    = []
+    cursor     = None
+    page_count = 0
 
     while True:
-        page += 1
-        if page > MAX_PAGES:
-            print(f"   ⚠️  Hit page cap ({MAX_PAGES}). Stopping pagination.")
+        page_count += 1
+        if page_count > MAX_PAGES_PER_SERIES:
             break
 
-        params = {"limit": PAGE_SIZE, "status": "open"}
+        params = {
+            "limit":         PAGE_SIZE,
+            "status":        "open",
+            "series_ticker": series_ticker,
+        }
         if cursor:
             params["cursor"] = cursor
 
-        data = get(MARKETS_ENDPOINT, params)
+        data  = get(MARKETS_ENDPOINT, params)
         batch = data.get("markets", [])
 
         if not batch:
             break
 
-        all_markets.extend(batch)
-        print(f"   Page {page:>3}: +{len(batch)} markets  (running total: {len(all_markets)})")
+        markets.extend(batch)
 
         cursor = data.get("cursor")
         if not cursor:
@@ -130,58 +155,27 @@ def fetch_all_open_markets() -> list:
 
         time.sleep(0.3)
 
+    return markets
+
+
+def fetch_all_political_markets(series_tickers: list) -> list:
+    all_markets = []
+    ingested_at = datetime.now(timezone.utc).isoformat()
+
+    for i, ticker in enumerate(series_tickers, 1):
+        markets = fetch_markets_for_series(ticker)
+
+        if markets:
+            for m in markets:
+                m["ingested_at"]   = ingested_at
+                m["series_ticker"] = ticker
+                m["status_pulled"] = "open"
+            all_markets.extend(markets)
+            print(f"   [{i:>3}/{len(series_tickers)}] {ticker:<30} → {len(markets)} markets")
+
+        time.sleep(0.3)
+
     return all_markets
-
-
-# ─────────────────────────────────────────────
-# STEP 2 — BUILD CATEGORY LOOKUP FROM /series
-# Single API call → {series_ticker: category}
-# ─────────────────────────────────────────────
-
-def build_category_lookup() -> dict:
-    """
-    One call to /series — builds a quick lookup dict so we can
-    filter bulk markets by category locally.
-    """
-    data = get(SERIES_ENDPOINT)
-    series = data.get("series", [])
-    lookup = {}
-    for s in series:
-        ticker   = s.get("ticker", "")
-        category = (s.get("category", "") or "").strip()
-        lookup[ticker] = category
-    print(f"   Series lookup built: {len(lookup)} entries")
-    return lookup
-
-
-# ─────────────────────────────────────────────
-# STEP 3 — LOCAL FILTER FOR POLITICS
-# ─────────────────────────────────────────────
-
-def filter_political(markets: list, category_lookup: dict) -> list:
-    """
-    Client-side filter: keep only political markets,
-    exclude mislabeled sports/weather/entertainment.
-    Uses category from the market object if available,
-    falls back to the series lookup.
-    """
-    political = []
-    for m in markets:
-        series_ticker = m.get("series_ticker", "")
-        category = (m.get("category", "") or "").strip()
-        if not category:
-            category = category_lookup.get(series_ticker, "")
-
-        if category not in TARGET_CATEGORIES:
-            continue
-
-        title = (m.get("title", "") or "").lower()
-        if any(ex in title for ex in TEXT_EXCLUDE):
-            continue
-
-        political.append(m)
-
-    return political
 
 
 # ─────────────────────────────────────────────
@@ -245,46 +239,33 @@ def preview(markets: list, n: int = 5):
 
 def main():
     print("=" * 65)
-    print("PredictIQ — Kalshi Active Markets Poll  [BULK v2]")
+    print("PredictIQ — Kalshi Active Markets Poll")
     print(f"Run time : {datetime.now(timezone.utc).isoformat()}")
     print(f"Output   : {BRONZE_DIR}")
     print("=" * 65)
 
-    # 1. Build category lookup (1 API call)
-    print("\n📋 Building series → category lookup...")
-    category_lookup = build_category_lookup()
+    # 1. Get open political series
+    print("\n📋 Fetching open political series...")
+    series_tickers = fetch_political_series()
+    if not series_tickers:
+        print("⚠️  No political series found.")
+        return
 
-    # 2. Bulk fetch ALL open markets (paginated, ~15-25 API calls)
-    print(f"\n📡 Bulk-fetching all open markets...")
-    all_markets = fetch_all_open_markets()
-    print(f"\n   Total open markets (all categories): {len(all_markets)}")
-
+    # 2. Fetch open markets
+    print(f"\n📡 Fetching open markets...")
+    all_markets = fetch_all_political_markets(series_tickers)
+    print(f"\n✅ Total markets fetched: {len(all_markets)}")
     if not all_markets:
-        print("⚠️  No open markets returned from API.")
+        print("⚠️  No open markets found.")
         return
 
-    # 3. Filter for Politics locally
-    print(f"\n🔍 Filtering for Politics...")
-    political = filter_political(all_markets, category_lookup)
-    print(f"   {len(all_markets)} total → {len(political)} political")
-
-    if not political:
-        print("⚠️  No political markets after filtering.")
-        return
-
-    # 4. Stamp metadata
-    ingested_at = datetime.now(timezone.utc).isoformat()
-    for m in political:
-        m["ingested_at"]   = ingested_at
-        m["status_pulled"] = "open"
-
-    # 5. Save
+    # 3. Save
     print(f"\n💾 Saving to Bronze...")
-    save_to_bronze(political)
+    save_to_bronze(all_markets)
 
-    # 6. Preview
+    # 4. Preview
     print(f"\n🔍 Sample:")
-    preview(political)
+    preview(all_markets)
 
     print("\n✅ Done.")
     print("=" * 65)
@@ -295,14 +276,26 @@ if __name__ == "__main__":
     import traceback
 
     SLEEP_SECONDS = 900  # 15 minutes
+    LOCK_FILE = os.path.join(PROJECT_ROOT, "data", ".kalshi_api.lock")
     
-    print("[Kalshi Active] Polling Daemon Initialized (15-min intervals).")
+    print("[Kalshi Active] Polling Daemon Initialized (15-minute intervals).")
     while True:
         try:
+            # Signal to the ETL orchestrator that we're hitting the Kalshi API
+            os.makedirs(os.path.dirname(LOCK_FILE), exist_ok=True)
+            with open(LOCK_FILE, "w") as f:
+                f.write(datetime.now(timezone.utc).isoformat())
+            
             main()
         except Exception:
             print("[Kalshi Active] FATAL ERROR in main loop:")
             traceback.print_exc()
+        finally:
+            # Release the lock so settlement can run
+            try:
+                os.remove(LOCK_FILE)
+            except OSError:
+                pass
             
         print(f"\n[Kalshi Active] Poll complete. Sleeping {SLEEP_SECONDS // 60} minutes...")
         time.sleep(SLEEP_SECONDS)

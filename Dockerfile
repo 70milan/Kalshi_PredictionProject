@@ -22,5 +22,4 @@ RUN mkdir -p data/bronze data/silver data/gold && \
 # Ivy cache is pre-populated — set env so runtime Spark finds it
 ENV IVY_PACKAGE_DIR=/opt/spark/work-dir/.ivy2
 
-# Switch back to non-root user (Spark default is 185)
-USER 185
+# Stay as root for volume-mounted writes on Windows/local dev

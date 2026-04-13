@@ -270,17 +270,4 @@ def main():
 
 
 if __name__ == "__main__":
-    import time
-    import traceback
-
-    print("[Silver News] Docker Polling Service Initialized (5-min intervals).")
-    while True:
-        try:
-            main()
-            print("[Silver News] Run complete. Sleeping for 300 seconds...")
-        except Exception:
-            print("[Silver News] LOOP ERROR detected:")
-            traceback.print_exc()
-            print("[Silver News] Sleeping for 300 seconds before retry...")
-        
-        time.sleep(300)
+    main()

@@ -104,11 +104,13 @@ def save_to_bronze(items):
     
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     filepath = os.path.join(BRONZE_DIR, f"nyt_{ts}.parquet").replace("\\", "/")
+    latest_path = os.path.join(BRONZE_DIR, "latest.parquet").replace("\\", "/")
     
     conn = duckdb.connect()
     try:
         conn.execute(f"COPY (SELECT * FROM df) TO '{filepath}' (FORMAT 'PARQUET')")
-        print(f"💾 Saved {len(items)} articles to {filepath}")
+        conn.execute(f"COPY (SELECT * FROM df) TO '{latest_path}' (FORMAT 'PARQUET')")
+        print(f"💾 Saved {len(items)} articles to {filepath} and latest.parquet")
         return True
     except Exception as e:
         print(f"❌ Failed to save to Parquet: {e}")

@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 # CONFIG
 # ─────────────────────────────────────────────
 
-CNN_POLITICS_RSS = "http://rss.cnn.com/rss/cnn_allpolitics.rss"
+CNN_POLITICS_RSS = "http://rss.cnn.com/rss/cnn_latest.rss"
 
 # Always write to project root — two levels up from script location
 PROJECT_ROOT = "/app"

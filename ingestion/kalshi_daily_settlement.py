@@ -98,134 +98,86 @@ def get(path: str, params: dict = None, max_retries: int = 5) -> dict:
 
 
 # ─────────────────────────────────────────────
-# STEP 1 — BULK FETCH ALL MARKETS BY STATUS
-# O(N_pages) instead of O(N_series)
+# STEP 1 — GET POLITICAL SERIES
 # ─────────────────────────────────────────────
 
-def fetch_markets_bulk(status: str) -> list:
-    """
-    Single paginated sweep of GET /markets?status={status}&limit=200.
-    No series_ticker filter — fetches everything, then we filter locally.
-    """
-    all_markets = []
-    cursor = None
-    page = 0
-
-    while True:
-        page += 1
-        if page > MAX_PAGES:
-            print(f"   ⚠️  Hit page cap ({MAX_PAGES}) for status={status}.")
-            break
-
-        params = {"limit": PAGE_SIZE, "status": status}
-        if cursor:
-            params["cursor"] = cursor
-
-        data = get(MARKETS_ENDPOINT, params)
-        batch = data.get("markets", [])
-
-        if not batch:
-            break
-
-        all_markets.extend(batch)
-
-        if page % 10 == 0:
-            print(f"   [{status}] Page {page}: running total {len(all_markets)}")
-
-        cursor = data.get("cursor")
-        if not cursor:
-            break
-
-        time.sleep(0.3)
-
-    print(f"   [{status}] Fetched {len(all_markets)} total markets in {page} pages")
-    return all_markets
+def fetch_political_series() -> list:
+    """Fetch series that are open or settled and return only political series tickers."""
+    political = []
+    
+    # Check both statuses to catch markets finalizing in active series
+    for status in ["open", "settled"]:
+        data = get(SERIES_ENDPOINT, params={"status": status})
+        series = data.get("series", [])
+        
+        for s in series:
+            category = (s.get("category", "") or "").strip()
+            if category in TARGET_CATEGORIES:
+                political.append(s["ticker"])
+                
+    # Unique tickers only
+    political = list(set(political))
+    print(f"   Relevant (open/settled) political series found: {len(political)}")
+    return political
 
 
 # ─────────────────────────────────────────────
-# STEP 2 — BUILD CATEGORY LOOKUP FROM /series
-# Single API call → {series_ticker: category}
+# STEP 2 — FETCH MARKETS PER SERIES
 # ─────────────────────────────────────────────
 
-def build_category_lookup() -> dict:
-    """
-    One call to /series (no status filter) — builds a lookup dict
-    so we can filter bulk markets by category locally.
-    """
-    data = get(SERIES_ENDPOINT)
-    series = data.get("series", [])
-    lookup = {}
-    for s in series:
-        ticker   = s.get("ticker", "")
-        category = (s.get("category", "") or "").strip()
-        lookup[ticker] = category
-    print(f"   Series lookup built: {len(lookup)} entries")
-    return lookup
-
-
-# ─────────────────────────────────────────────
-# STEP 3 — LOCAL FILTER: POLITICS + RECENCY
-# ─────────────────────────────────────────────
-
-def filter_political_recent(markets: list, category_lookup: dict, cutoff_ts: str) -> list:
-    """
-    Client-side filter:
-      1. Category must be Politics (from market or series lookup)
-      2. Title must not match TEXT_EXCLUDE
-      3. Settlement/close time must be after cutoff_ts (last 24h)
-    """
-    filtered = []
-    for m in markets:
-        series_ticker = m.get("series_ticker", "")
-        category = (m.get("category", "") or "").strip()
-        if not category:
-            category = category_lookup.get(series_ticker, "")
-
-        if category not in TARGET_CATEGORIES:
-            continue
-
-        title = (m.get("title", "") or "").lower()
-        if any(ex in title for ex in TEXT_EXCLUDE):
-            continue
-
-        # Recency check — only keep markets settled/closed after cutoff
-        ts_str = m.get("settlement_ts") or m.get("close_time") or ""
-        if ts_str and ts_str < cutoff_ts:
-            continue
-
-        filtered.append(m)
-
-    return filtered
-
-
-# ─────────────────────────────────────────────
-# STEP 4 — SWEEP BOTH STATUSES IN BULK
-# ─────────────────────────────────────────────
-
-def fetch_todays_settlements(category_lookup: dict, cutoff_ts: str) -> tuple:
-    """
-    Bulk fetch settled + closed markets, filter locally.
-    ~50 API calls total instead of ~3,600 per-series calls.
-    """
+def fetch_status_markets(series_tickers: list, status: str, cutoff_ts: str) -> list:
+    """Fetch markets by status for each series, filtering by recency."""
+    print(f"\n   Fetching {status} markets per series...")
     ingested_at = datetime.now(timezone.utc).isoformat()
-
-    print(f"\n   Bulk-fetching settled markets...")
-    raw_settled = fetch_markets_bulk("settled")
-    settled = filter_political_recent(raw_settled, category_lookup, cutoff_ts)
-    for m in settled:
-        m["ingested_at"]   = ingested_at
-        m["status_pulled"] = "settled"
-    print(f"   Settled: {len(raw_settled)} total → {len(settled)} political + recent")
-
-    print(f"\n   Bulk-fetching closed markets...")
-    raw_closed = fetch_markets_bulk("closed")
-    closed = filter_political_recent(raw_closed, category_lookup, cutoff_ts)
-    for m in closed:
-        m["ingested_at"]   = ingested_at
-        m["status_pulled"] = "closed"
-    print(f"   Closed: {len(raw_closed)} total → {len(closed)} political + recent")
-
-    return closed, settled
+    filtered = []
+    
+    for i, st in enumerate(series_tickers, 1):
+        cursor = None
+        page = 0
+        while True:
+            page += 1
+            if page > 10: 
+                break
+                
+            params = {"limit": 200, "status": status, "series_ticker": st}
+            if cursor: 
+                params["cursor"] = cursor
+                
+            data = get(MARKETS_ENDPOINT, params)
+            time.sleep(0.2)  # Smooth out 1,800 series requests
+            if not data:
+                break
+                
+            batch = data.get("markets", [])
+            if not batch: 
+                break
+                
+            for m in batch:
+                title = (m.get("title", "") or "").lower()
+                if any(ex in title for ex in TEXT_EXCLUDE): 
+                    continue
+                    
+                # Recency check
+                ts_str = m.get("settlement_ts") or m.get("close_time") or ""
+                if ts_str and ts_str < cutoff_ts: 
+                    continue
+                    
+                m["series_ticker"] = st
+                m["ingested_at"]   = ingested_at
+                m["status_pulled"] = status
+                filtered.append(m)
+                
+            cursor = data.get("cursor")
+            if not cursor: 
+                break
+                
+            time.sleep(0.3)
+            
+        if i % 200 == 0:
+            print(f"   [{status}] Checked {i}/{len(series_tickers)} series... ({len(filtered)} found so far)")
+            
+    print(f"   [{status}] Completed. Total {status} markets found: {len(filtered)}")
+    return filtered
 
 
 # ─────────────────────────────────────────────
@@ -291,12 +243,13 @@ def main():
     print(f"Closed    : {CLOSED_DIR}")
     print("=" * 65)
 
-    # 1. Build category lookup (1 API call)
-    print("\n📋 Building series → category lookup...")
-    category_lookup = build_category_lookup()
+    # 1. Get political series
+    print("\n📋 Fetching political series list...")
+    series_tickers = fetch_political_series()
 
-    # 2. Bulk fetch + filter for both statuses
-    closed_markets, settled_markets = fetch_todays_settlements(category_lookup, cutoff)
+    # 2. Fetch recent markets per status
+    closed_markets  = fetch_status_markets(series_tickers, "closed", cutoff)
+    settled_markets = fetch_status_markets(series_tickers, "settled", cutoff)
 
     total = len(closed_markets) + len(settled_markets)
     print(f"\n   Sweep complete — {len(closed_markets)} closed + {len(settled_markets)} settled found today.")
@@ -324,11 +277,5 @@ def main():
 
 
 if __name__ == "__main__":
-    SLEEP_SECONDS = 86400  # 24 hours
-    while True:
-        try:
-            main()
-        except Exception as e:
-            print(f"[Settlement Daemon] Run failed with error: {e}. Continuing to next cycle.")
-        print(f"[Settlement Daemon] Sweep complete. Sleeping {SLEEP_SECONDS // 3600} hours until next run...")
-        time.sleep(SLEEP_SECONDS)
+    main()
+

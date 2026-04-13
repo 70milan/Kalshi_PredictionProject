@@ -328,17 +328,4 @@ def main():
 
 
 if __name__ == "__main__":
-    import time
-    import traceback
-
-    print("[Silver GDELT Events] Docker Polling Service Initialized (5-min intervals).")
-    while True:
-        try:
-            main()
-            print("[Silver GDELT Events] Run complete. Sleeping for 300 seconds...")
-        except Exception:
-            print("[Silver GDELT Events] LOOP ERROR detected:")
-            traceback.print_exc()
-            print("[Silver GDELT Events] Sleeping for 300 seconds before retry...")
-        
-        time.sleep(300)
+    main()
