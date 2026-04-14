@@ -40,7 +40,9 @@ docker logs -f predictiq_ingest_kalshi_active
 docker logs -f predictiq_transform_news
 ```
 
----
+---docker compose stop ingest-kalshi-daily
+docker compose stop ingest-kalshi-daily
+
 
 ## 🛠️ Individual Service Management
 
