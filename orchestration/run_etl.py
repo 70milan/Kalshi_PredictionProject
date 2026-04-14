@@ -194,7 +194,7 @@ def run_etl_cycle():
         print("-" * 40)
         silver_ok = 0
         for script in SILVER_SCRIPTS:
-            if run_script(script, timeout_seconds=600):
+            if run_script(script, timeout_seconds=900):
                 silver_ok += 1
         print(f"    Silver: {silver_ok}/{len(SILVER_SCRIPTS)} completed.")
 
@@ -203,7 +203,7 @@ def run_etl_cycle():
         print("-" * 40)
         gold_ok = 0
         for script in GOLD_SCRIPTS:
-            if run_script(script, timeout_seconds=600):
+            if run_script(script, timeout_seconds=900):
                 gold_ok += 1
         print(f"    Gold: {gold_ok}/{len(GOLD_SCRIPTS)} completed.")
 
@@ -221,7 +221,7 @@ def run_etl_cycle():
         else:
             print("\n[Phase 3/3] Kalshi Daily Settlement Sweep")
             print("-" * 40)
-            if run_script(DAILY_SETTLEMENT_SCRIPT, timeout_seconds=900):
+            if run_script(DAILY_SETTLEMENT_SCRIPT, timeout_seconds=3600):
                 mark_daily_settlement_done()
             else:
                 print("    Settlement failed. Will retry next cycle.")

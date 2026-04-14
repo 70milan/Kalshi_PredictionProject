@@ -247,13 +247,30 @@ def main():
     print("\n📋 Fetching political series list...")
     series_tickers = fetch_political_series()
 
-    # 2. Fetch recent markets per status
-    closed_markets  = fetch_status_markets(series_tickers, "closed", cutoff)
-    settled_markets = fetch_status_markets(series_tickers, "settled", cutoff)
+    # 2. Fetch recent markets per status in a single pass
+    all_closed = []
+    all_settled = []
+    
+    print("\n   Fetching finalized markets per series...")
+    for i, st in enumerate(series_tickers, 1):
+        if i % 100 == 0:
+            print(f"   Progress: {i}/{len(series_tickers)} series checked...")
+            
+        # Check closed
+        closed_batch = fetch_status_markets([st], "closed", cutoff)
+        all_closed.extend(closed_batch)
+        
+        # Check settled
+        settled_batch = fetch_status_markets([st], "settled", cutoff)
+        all_settled.extend(settled_batch)
 
-    total = len(closed_markets) + len(settled_markets)
-    print(f"\n   Sweep complete — {len(closed_markets)} closed + {len(settled_markets)} settled found today.")
+    print(f"\n   Completed. Found {len(all_closed)} closed and {len(all_settled)} settled markets.")
 
+    # 3. Save incrementally
+    save_incremental(all_settled, SETTLED_DIR, "settled")
+    save_incremental(all_closed, CLOSED_DIR, "closed")
+
+    total = len(all_closed) + len(all_settled)
     if total == 0:
         print("   Nothing new settled in the last 24 hours. Nothing to save.")
         print("=" * 65)

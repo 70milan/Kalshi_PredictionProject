@@ -1,145 +1,97 @@
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 
 # PySpark Windows Fixes
 os.environ["PYSPARK_PYTHON"] = sys.executable
 os.environ["PYSPARK_DRIVER_PYTHON"] = sys.executable
 
-_hadoop_home = os.environ.get("HADOOP_HOME", "")
-if _hadoop_home:
-    os.environ["PATH"] = os.path.join(_hadoop_home, "bin") + ";" + os.environ.get("PATH", "")
-
-os.environ["SPARK_LOCAL_IP"] = "127.0.0.1"
-from pyspark.sql import SparkSession
+from pyspark.sql import SparkSession, Window
 from pyspark.sql import functions as F
 from delta import configure_spark_with_delta_pip
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 def generate_gdelt_summaries(spark, gkg_path, events_path):
+    # Check if silver tables exist
     log_gkg = os.path.exists(os.path.join(gkg_path, "_delta_log"))
     log_events = os.path.exists(os.path.join(events_path, "_delta_log"))
     
     if not (log_gkg or log_events):
-        print("[Gold GDELT Summaries] Silver history tables do not exist yet. Exiting.")
+        print("[Gold GDELT] No silver history found. Exiting.")
         return None
 
-    # Calculate 7-day cutoff Date (Timestamp arithmetic)
-    cutoff = F.current_timestamp() - F.expr("INTERVAL 7 DAYS")
+    # 1. Load and Standardize GKG Entities
+    # We extract the 'Fingerprint' (Person, Theme, Org, Location)
+    df_gkg = spark.read.format("delta").load(gkg_path) \
+        .select("ingested_at", "raw_tone_stats", "persons_array", "themes_array", "orgs_array", "locs_array")
+    
+    # Extract tone (1st value in raw_tone_stats)
+    df_gkg = df_gkg.withColumn("tone", F.split(F.col("raw_tone_stats"), ",").getItem(0).cast("double"))
+    df_gkg = df_gkg.withColumn("ts", F.col("ingested_at").cast("long"))
 
-    mentions_dfs = []
+    # Create entity-grain rows
+    gkg_entities = []
+    
+    # Persons
+    gkg_entities.append(df_gkg.select("ts", "tone", F.explode("persons_array").alias("entity_name"), F.lit("person").alias("entity_type")))
+    # Themes
+    gkg_entities.append(df_gkg.select("ts", "tone", F.explode("themes_array").alias("entity_name"), F.lit("theme").alias("entity_type")))
+    # Organizations
+    gkg_entities.append(df_gkg.select("ts", "tone", F.explode("orgs_array").alias("entity_name"), F.lit("organization").alias("entity_type")))
+    # Locations
+    gkg_entities.append(df_gkg.select("ts", "tone", F.explode("locs_array").alias("entity_name"), F.lit("location").alias("entity_type")))
 
-    # 1. Process GKG History
-    if log_gkg:
-        df_gkg = spark.read.format("delta").load(gkg_path)
-        
-        # Filter for last 7 days
-        df_gkg_7d = df_gkg.filter(
-            (F.col("ingested_at").isNotNull()) & 
-            (F.to_timestamp(F.col("ingested_at")) > cutoff)
-        )
-        
-        # Extract average tone (first value in raw_tone_stats)
-        if "raw_tone_stats" in df_gkg_7d.columns:
-            df_gkg_7d = df_gkg_7d.withColumn("tone", F.split(F.col("raw_tone_stats"), ",").getItem(0).cast("double"))
-        else:
-            df_gkg_7d = df_gkg_7d.withColumn("tone", F.lit(0.0).cast("double"))
+    # Union all GKG entities
+    df_all = gkg_entities[0]
+    for df in gkg_entities[1:]:
+        df_all = df_all.unionAll(df)
 
-        # Explode Persons
-        if "persons_array" in df_gkg_7d.columns:
-            gkg_persons = df_gkg_7d.select(
-                F.explode("persons_array").alias("entity_name"),
-                F.col("tone"),
-                F.lit("person").alias("entity_type"),
-                F.lit(1.0).alias("mentions")  # 1 Doc = 1 base mention for GKG
-            ).filter(F.col("entity_name").rlike("^[A-Za-z0-9 ]+$"))  # Alpha numeric names only
-            mentions_dfs.append(gkg_persons)
+    # Clean up names (alpha-numeric + spaces)
+    df_all = df_all.filter(F.col("entity_name").rlike("^[A-Za-z0-9 _]+$"))
 
-        # Explode Themes
-        if "themes_array" in df_gkg_7d.columns:
-            gkg_themes = df_gkg_7d.select(
-                F.explode("themes_array").alias("entity_name"),
-                F.col("tone"),
-                F.lit("theme").alias("entity_type"),
-                F.lit(1.0).alias("mentions")
-            ).filter(F.col("entity_name").rlike("^[A-Z0-9_]+$")) # Themes are ALL CAPS with underscores
-            mentions_dfs.append(gkg_themes)
+    # 2. Add Multi-Window Velocity Signals
+    # Define Windows using unix seconds
+    win_15m = Window.partitionBy("entity_type", "entity_name").orderBy("ts").rangeBetween(-900, 0)
+    win_24h = Window.partitionBy("entity_type", "entity_name").orderBy("ts").rangeBetween(-86400, 0)
+    win_90d = Window.partitionBy("entity_type", "entity_name").orderBy("ts").rangeBetween(-7776000, 0)
 
-        # Explode Organizations
-        if "organizations_array" in df_gkg_7d.columns:
-            gkg_orgs = df_gkg_7d.select(
-                F.explode("organizations_array").alias("entity_name"),
-                F.col("tone"),
-                F.lit("organization").alias("entity_type"),
-                F.lit(1.0).alias("mentions")
-            ).filter(F.col("entity_name").rlike("^[A-Za-z0-9 ]+$"))
-            mentions_dfs.append(gkg_orgs)
+    # Calculate Volume Velocity (Count of mentions in windows)
+    df_summary = df_all \
+        .withColumn("vol_15m", F.count("ts").over(win_15m)) \
+        .withColumn("vol_24h", F.count("ts").over(win_24h)) \
+        .withColumn("vol_90d", F.count("ts").over(win_90d)) \
+        .withColumn("tone_15m", F.avg("tone").over(win_15m)) \
+        .withColumn("tone_24h", F.avg("tone").over(win_24h))
 
-        # Explode Locations
-        if "locations_array" in df_gkg_7d.columns:
-            gkg_locations = df_gkg_7d.select(
-                F.explode("locations_array").alias("entity_name"),
-                F.col("tone"),
-                F.lit("location").alias("entity_type"),
-                F.lit(1.0).alias("mentions")
-            ).filter(F.col("entity_name").rlike("^[A-Za-z0-9 ,]+$"))
-            mentions_dfs.append(gkg_locations)
-
-    # 2. Process Events History
-    if log_events:
-        df_events = spark.read.format("delta").load(events_path)
-        
-        df_events_7d = df_events.filter(
-            (F.col("ingested_at").isNotNull()) & 
-            (F.to_timestamp(F.col("ingested_at")) > cutoff)
-        )
-
-        cols = df_events_7d.columns
-        if "actor1_name" in cols and "tone_score" in cols:
-            events_actor1 = df_events_7d.filter(F.col("actor1_name").isNotNull()).select(
-                F.col("actor1_name").alias("entity_name"),
-                F.col("tone_score").alias("tone"),
-                F.lit("person").alias("entity_type"),
-                F.coalesce(F.col("mention_count").cast("double"), F.lit(1.0)).alias("mentions")
-            )
-            mentions_dfs.append(events_actor1)
-
-    if not mentions_dfs:
-        print("[Gold GDELT Summaries] No recent data found.")
-        return None
-
-    # Union all slices
-    all_mentions = mentions_dfs[0]
-    for df in mentions_dfs[1:]:
-        all_mentions = all_mentions.unionAll(df)
-
-    # 3. Aggregate
-    # Calculate total mentions and unweighted average tone
-    df_grouped = all_mentions.groupBy("entity_type", "entity_name").agg(
-        F.sum("mentions").alias("rolling_7d_mentions"),
-        F.avg("tone").alias("rolling_7d_tone")
+    # 3. Aggregate to latest state per entity
+    # We only care about the most recent results for the 'current' snapshot
+    df_latest = df_summary.groupBy("entity_type", "entity_name").agg(
+        F.max("vol_15m").alias("vol_15m"),
+        F.max("vol_24h").alias("vol_24h"),
+        F.max("vol_90d").alias("vol_90d"),
+        F.last("tone_15m").alias("tone_15m"),
+        F.last("tone_24h").alias("tone_24h")
     )
 
-    # V4 Staleness Guard: Mark table refresh timestamp
-    df_gold = df_grouped.withColumn("ingested_at", F.current_timestamp())
-    
-    # Optional: Filter out trivial noise (entities with tiny mention counts over 7 days)
-    df_gold = df_gold.filter(F.col("rolling_7d_mentions") > 2)
+    # 4. Spike Detection Signal
+    # Velocity = Current / Baseline (avoid div by zero)
+    df_latest = df_latest.withColumn(
+        "vol_spike_multiplier", 
+        F.col("vol_15m") / F.when(F.col("vol_90d") > 0, F.col("vol_90d") / (90 * 24 * 4)).otherwise(1.0)
+    )
 
+    df_gold = df_latest.withColumn("ingested_at", F.current_timestamp())
     return df_gold
 
 def main():
-    print("[Gold GDELT] Initializing PySpark Session for Ground Truth Summaries...")
-    ivy_dir = os.environ.get("IVY_PACKAGE_DIR", "")
+    print("[Gold GDELT] Initializing PySpark Session for Velocity Summaries...")
     builder = SparkSession.builder \
-        .appName("PredictIQ_Gold_GDELT_Summaries") \
+        .appName("PredictIQ_Gold_GDELT_Velocity") \
         .config("spark.driver.memory", "4g") \
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension") \
         .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog") \
         .config("spark.sql.parquet.enableVectorizedReader", "false")
-    if ivy_dir:
-        builder = builder.config("spark.jars.ivy", ivy_dir)
 
     spark = configure_spark_with_delta_pip(builder).getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
@@ -150,15 +102,16 @@ def main():
 
     try:
         df_gold = generate_gdelt_summaries(spark, gkg_path, events_path)
-        if df_gold is None:
-            return
-            
-        row_count = df_gold.count()
-        print(f"[Gold GDELT] Generated {row_count} Entity Aggregates. Writing to Delta...")
-        
-        # Overwrite mode: always present the latest 7-day snapshot
+        if df_gold is None: return
+
+        # Save History (Append)
+        history_path = gold_path + "_history"
+        df_gold.write.format("delta").mode("append").option("mergeSchema", "true").save(history_path)
+
+        # Save Current (Overwrite)
         df_gold.write.format("delta").mode("overwrite").option("mergeSchema", "true").save(gold_path)
-        print("[Gold GDELT] SUCCESS. Ground Truth Summaries table completely updated.")
+        
+        print(f"[Gold GDELT] SUCCESS. Velocity signals generated for {df_gold.count()} entities.")
         
     except Exception as e:
         print(f"[Gold GDELT] FATAL ERROR: {str(e)}")
@@ -168,4 +121,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
