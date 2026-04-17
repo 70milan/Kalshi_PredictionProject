@@ -100,16 +100,18 @@ def enrich_on_driver(pdf):
         pdf["published_at"] = pdf["published_at"].fillna(pdf["published"])
         pdf.drop(columns=["published"], inplace=True)
 
-    # 2. Robust date parsing then convert to ISO string for JSON serialization
+    # 2. Robust date parsing
+    # Use pd.to_datetime with UTC=True to handle all source formats (RSS, ISO, etc)
     pdf["published_at"] = pd.to_datetime(pdf["published_at"], errors="coerce", utc=True)
     pdf["ingested_at"] = pd.to_datetime(pdf["ingested_at"], errors="coerce", utc=True)
 
-    # Convert to ISO strings (Spark reads these perfectly as timestamps)
+    # Convert to standard strings that Spark's cast("timestamp") handles perfectly: YYYY-MM-DD HH:MM:SS
+    # We use a space instead of 'T' for maximum compatibility with default Spark casting
     pdf["published_at"] = pdf["published_at"].apply(
-        lambda x: x.strftime("%Y-%m-%dT%H:%M:%S") if pd.notna(x) else None
+        lambda x: x.strftime("%Y-%m-%d %H:%M:%S") if pd.notna(x) else None
     )
     pdf["ingested_at"] = pdf["ingested_at"].apply(
-        lambda x: x.strftime("%Y-%m-%dT%H:%M:%S") if pd.notna(x) else None
+        lambda x: x.strftime("%Y-%m-%d %H:%M:%S") if pd.notna(x) else None
     )
 
     # 3. Ensure text columns exist
@@ -246,7 +248,7 @@ def main():
                     F.when(
                         F.col(ts_col).isNotNull() &
                         ~F.col(ts_col).isin("NaN", "None", "NaT", ""),
-                        F.to_timestamp(F.col(ts_col))
+                        F.col(ts_col).cast(TimestampType())
                     ).otherwise(F.lit(None).cast(TimestampType()))
                 )
 
