@@ -63,6 +63,12 @@ GOLD_SCRIPTS = [
     os.path.join(PROJECT_ROOT, "transformation", "gold_gdelt_summaries_transform.py"),
 ]
 
+# Phase 3: Vector Bridge (Delta -> ChromaDB)
+VECTOR_SYNC_SCRIPT = os.path.join(PROJECT_ROOT, "rag", "embed_silver_data.py")
+
+# Phase 4: Inference (LLM Synthesis)
+INFERENCE_SCRIPT = os.path.join(PROJECT_ROOT, "inference", "explain_mispricing.py")
+
 POLL_INTERVAL = 300   # 5 minutes
 
 
@@ -214,19 +220,29 @@ def run_etl_cycle():
         expected = len(SILVER_SCRIPTS) + len(GOLD_SCRIPTS)
         print(f"\n    [ RESULT ] {total}/{expected} transforms succeeded.")
 
-    # --- Phase 3: Daily Settlement (once per day, AFTER transforms) ---
+        # --- Phase 3: Vector Sync ---
+        print("\n[Phase 3/4] Vector Bridge Synchronization")
+        print("-" * 40)
+        run_script(VECTOR_SYNC_SCRIPT, timeout_seconds=1200)
+
+        # --- Phase 4: Inference Engine ---
+        print("\n[Phase 4/4] AI Inference & Mispricing Detection")
+        print("-" * 40)
+        run_script(INFERENCE_SCRIPT, timeout_seconds=600)
+
+    # --- Phase 5: Daily Settlement (once per day, AFTER transforms) ---
     if should_run_daily_settlement():
         if is_kalshi_api_busy():
-            print("\n[Phase 3/3] Daily Settlement -- Active ingestor is running, deferring.")
+            print("\n[Phase 5/5] Daily Settlement -- Active ingestor is running, deferring.")
         else:
-            print("\n[Phase 3/3] Kalshi Daily Settlement Sweep")
+            print("\n[Phase 5/5] Kalshi Daily Settlement Sweep")
             print("-" * 40)
             if run_script(DAILY_SETTLEMENT_SCRIPT, timeout_seconds=3600):
                 mark_daily_settlement_done()
             else:
                 print("    Settlement failed. Will retry next cycle.")
     else:
-        print("\n[Phase 3/3] Daily Settlement -- already ran today, skipping.")
+        print("\n[Phase 5/5] Daily Settlement -- already ran today, skipping.")
 
     print(f"{'='*60}\n")
 

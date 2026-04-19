@@ -5,10 +5,14 @@ import json
 import math
 import pandas as pd
 import numpy as np
+from datetime import datetime, timezone
+from dateutil import parser
 
 # Force PySpark workers to use the exact virtual environment Python executable
-os.environ["PYSPARK_PYTHON"] = sys.executable
-os.environ["PYSPARK_DRIVER_PYTHON"] = sys.executable
+# Using legacy 8.3 Short Path to avoid spaces that break Spark .cmd files on Windows
+SHORT_PYTHON = "C:/DATAEN~1/codeprep/PREDEC~1/.venv/Scripts/python.exe"
+os.environ["PYSPARK_PYTHON"] = SHORT_PYTHON
+os.environ["PYSPARK_DRIVER_PYTHON"] = SHORT_PYTHON
 
 # Windows compatibility: ensure HADOOP_HOME bin is on PATH if env var is set
 _hadoop_home = os.environ.get("HADOOP_HOME", "")
@@ -30,41 +34,67 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # WATERMARK & INCREMENTAL READ UTILITIES
 # ─────────────────────────────────────────────
 
-def get_watermark(spark, silver_path):
-    """Returns MAX ingested_at from Silver Delta table, or None on cold start."""
+def get_source_watermarks(spark, silver_path):
+    """Returns a dictionary of {source: max_ingested_at} from the Silver table."""
+    watermarks = {}
     delta_log = os.path.join(silver_path, "_delta_log")
     if os.path.exists(delta_log):
         try:
-            return spark.read.format("delta").load(silver_path) \
-                .select(F.max("ingested_at")).collect()[0][0]
+            # We use distinct sources to get the watermark for each one
+            df = spark.read.format("delta").load(silver_path)
+            res = df.groupBy("source").agg(F.max("ingested_at")).collect()
+            for row in res:
+                if row[0]: # Handle potential null source
+                    watermarks[row[0].strip().lower()] = row[1]
         except Exception:
-            return None
-    return None
+            pass
+    return watermarks
 
 
-def read_bronze_incremental(spark, bronze_files, watermark):
-    """Read Bronze Parquet files, filter to rows newer than watermark."""
-    if not bronze_files:
-        raise ValueError("[Silver News] No Bronze Parquet files found.")
-    df = spark.read.option("mergeSchema", "true").parquet(*bronze_files)
-    if watermark is not None:
-        df = df.filter(F.col("ingested_at") > str(watermark))
-    return df
+def read_bronze_incremental(spark, news_sources, ROOT, watermarks):
+    """Read Bronze Parquet files source-by-source, applying source-specific watermarks."""
+    dfs = []
+    
+    for source in news_sources:
+        source_dir = os.path.join(ROOT, "data", "bronze", source)
+        if not os.path.isdir(source_dir):
+            continue
+            
+        # Discover files for this specific source
+        source_files = []
+        for r, d, f in os.walk(source_dir):
+            for filename in fnmatch.filter(f, "*.parquet"):
+                # Always safely include latest.parquet as the watermark will filter the internals
+                source_files.append(os.path.join(r, filename))
+        
+        if not source_files:
+            continue
+            
+        # Read files for this source
+        df_source = spark.read.option("mergeSchema", "true").parquet(*source_files)
+        
+        # Apply source-specific watermark
+        source_key = source.strip().lower()
+        if source_key in watermarks:
+            wm = str(watermarks[source_key])
+            df_source = df_source.filter(F.col("ingested_at") > wm)
+            
+        dfs.append(df_source)
+        
+    if not dfs:
+        return None
+        
+    # Union all sources into one master DataFrame
+    master_df = dfs[0]
+    for next_df in dfs[1:]:
+        master_df = master_df.unionByName(next_df, allowMissingColumns=True)
+        
+    return master_df
 
 
 def write_history(spark, df, silver_path):
-    """Append enriched rows to Silver Delta table with idempotency guard."""
-    delta_log = os.path.join(silver_path, "_delta_log")
-    if os.path.exists(delta_log):
-        try:
-            batch_min = df.select(F.min("ingested_at")).collect()[0][0]
-            already = spark.read.format("delta").load(silver_path) \
-                .filter(F.col("ingested_at") >= batch_min).limit(1).count() > 0
-            if already:
-                print("[Silver News] Batch already exists - skipping append.")
-                return
-        except Exception:
-            pass
+    """Append enriched rows to Silver Delta table. Idempotency is handled by the Source-Level Watermarks."""
+    print(f"[Silver News] Appending {df.count()} rows to Delta at {silver_path}...")
     df.write.format("delta").mode("append").option("mergeSchema", "true").save(silver_path)
 
 
@@ -101,17 +131,30 @@ def enrich_on_driver(pdf):
         pdf.drop(columns=["published"], inplace=True)
 
     # 2. Robust date parsing
-    # Use pd.to_datetime with UTC=True to handle all source formats (RSS, ISO, etc)
-    pdf["published_at"] = pd.to_datetime(pdf["published_at"], errors="coerce", utc=True)
-    pdf["ingested_at"] = pd.to_datetime(pdf["ingested_at"], errors="coerce", utc=True)
+    # RSS and News APIs use a variety of columns for dates. Normalize them all.
+    date_cols = ["published_at", "pubDate", "pubdate", "published", "date", "created_at"]
+    
+    def parse_dt(row):
+        # Try every possible column
+        for c in date_cols:
+            val = row.get(c)
+            if val and str(val).strip():
+                try:
+                    # dateutil parses: ISO, RSS (RFC822), Month Day Year, etc.
+                    dt = parser.parse(str(val))
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    return dt.strftime("%Y-%m-%d %H:%M:%S")
+                except:
+                    continue
+        return None
 
-    # Convert to standard strings that Spark's cast("timestamp") handles perfectly: YYYY-MM-DD HH:MM:SS
-    # We use a space instead of 'T' for maximum compatibility with default Spark casting
-    pdf["published_at"] = pdf["published_at"].apply(
-        lambda x: x.strftime("%Y-%m-%d %H:%M:%S") if pd.notna(x) else None
-    )
+    print("[Silver News] Parsing dates with dateutil...")
+    pdf["published_at"] = pdf.apply(parse_dt, axis=1)
+    
+    # Ingested_at is usually ISO or a standard string, but let's be safe
     pdf["ingested_at"] = pdf["ingested_at"].apply(
-        lambda x: x.strftime("%Y-%m-%d %H:%M:%S") if pd.notna(x) else None
+        lambda x: parser.parse(str(x)).strftime("%Y-%m-%d %H:%M:%S") if x else None
     )
 
     # 3. Ensure text columns exist
@@ -176,36 +219,21 @@ def main():
 
     # Discover Bronze files
     news_sources = ["bbc", "cnn", "foxnews", "nypost", "nyt", "thehindu"]
-    bronze_files = []
-    for source in news_sources:
-        source_dir = os.path.join(ROOT, "data", "bronze", source)
-        if os.path.isdir(source_dir):
-            for r, d, f in os.walk(source_dir):
-                # Filter *.parquet but EXCLUDE latest.parquet to avoid duplication
-                for filename in fnmatch.filter(f, "*.parquet"):
-                    if filename != "latest.parquet":
-                        bronze_files.append(os.path.join(r, filename))
-
-    if not bronze_files:
-        print("[Silver News] No Bronze Parquet files found. Exiting.")
-        return
-
-    print(f"[Silver News] Found {len(bronze_files)} Bronze Parquet files.")
     silver_path = os.path.join(ROOT, "data", "silver", "news_articles_enriched")
     tmp_json_dir = os.path.join(ROOT, "data", "silver", "_tmp_news_json")
 
     try:
-        # 1. Watermark
-        watermark = get_watermark(spark, silver_path)
-        print(f"[Silver News] Watermark: {watermark}")
+        # 1. Source-Level Watermarks
+        watermarks = get_source_watermarks(spark, silver_path)
+        print(f"[Silver News] Current source watermarks: {list(watermarks.keys())}")
 
-        # 2. Read incremental
-        df = read_bronze_incremental(spark, bronze_files, watermark)
-        if df.isEmpty():
-            print("[Silver News] No new data. Skipping.")
+        # 2. Read incremental (Source-by-Source)
+        df = read_bronze_incremental(spark, news_sources, ROOT, watermarks)
+        if df is None or df.isEmpty():
+            print("[Silver News] No new data found across all sources. Skipping.")
             return
 
-        # 3. Collect to Pandas (JVM collectToPython — stable, no casting)
+        # 3. Collect to Pandas (stable JVM bridge)
         print("[Silver News] Collecting Bronze rows to driver...")
         pdf = df.toPandas()
         print(f"[Silver News] Collected {len(pdf)} rows.")

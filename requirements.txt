@@ -16,3 +16,7 @@ vaderSentiment==3.3.2
 curl_cffi
 beautifulsoup4
 setuptools
+sentence-transformers
+chromadb
+google-generativeai
+python-dotenv
