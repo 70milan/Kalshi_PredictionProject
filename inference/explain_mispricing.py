@@ -2,7 +2,7 @@ import os
 import sys
 import duckdb
 import chromadb
-import google.generativeai as genai
+from groq import Groq
 import json
 import pandas as pd
 import argparse
@@ -16,17 +16,20 @@ load_dotenv()
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 KALSHI_HISTORY = os.path.join(PROJECT_ROOT, "data", "silver", "kalshi_markets_history")
-GOLD_BRIEFS = os.path.join(PROJECT_ROOT, "data", "gold", "intelligence_briefs")
-CHROMA_PATH  = os.path.join(PROJECT_ROOT, "data", "chroma")
+GOLD_BRIEFS    = os.path.join(PROJECT_ROOT, "data", "gold", "intelligence_briefs")
+CHROMA_PATH    = os.path.join(PROJECT_ROOT, "data", "chroma")
 
-# Threshold for "Master Suite" Filtering
-SIMILARITY_FLOOR = 0.15 
+# Similarity Tuning
+# Chroma default distance is L2. We convert to similarity via 1/(1+d).
+# With all-MiniLM-L6-v2 embeddings, L2 distances for related content
+# cluster around 0.9-1.3, yielding similarities of ~0.43-0.53.
+# A floor of 0.45 filters noise while admitting genuinely related content.
+SIMILARITY_FLOOR = 0.45
 
-# Configure Gemini 1.5 Pro
-GEMINI_API_KEY = os.getenv("Gemini_API")
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-flash-latest')
+# Configure Groq (free tier: 14,400 req/day, 30 req/min)
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+GROQ_MODEL = "llama-3.3-70b-versatile"
 
 # ---------------------------------------------------------
 # 2. THE GATEKEEPER (With Mock/Override logic)
@@ -70,94 +73,124 @@ def get_candidate_markets(con, ticker_override=None, threshold=0.10):
 # ---------------------------------------------------------
 # 3. CASCADING RAG SEARCH (With Similarity Logic)
 # ---------------------------------------------------------
-def fetch_rag_context(collection, query_text, current_time, window_mins=15, debug=False):
+def fetch_rag_context(collections, query_text, current_time, window_mins=15, debug=False):
     """
-    Helper to search a specific window and return scored documents.
+    Search multiple Chroma collections and return merged, scored documents.
+    Uses L2 distance -> similarity conversion: score = 1 / (1 + distance).
     """
     start_ts = int((current_time - timedelta(minutes=window_mins)).timestamp())
-    results = collection.query(
-        query_texts=[query_text],
-        n_results=10,
-        where={"ingested_timestamp": {"$gte": start_ts}},
-        include=["documents", "metadatas", "distances"]
-    )
-    
     scored_docs = []
-    if results['documents'] and results['documents'][0]:
-        for i in range(len(results['documents'][0])):
-            distance = results['distances'][0][i]
-            score = 1.0 - distance # Similarity Approximation
-            
-            if score >= SIMILARITY_FLOOR:
-                scored_docs.append({
-                    "content": results['documents'][0][i],
-                    "source": results['metadatas'][0][i].get('source', 'GDELT'),
-                    "score": score
-                })
-            elif debug:
-                print(f"      [REJECTED: {score*100:.1f}%] {results['metadatas'][0][i].get('source', '???')}: {results['documents'][0][i][:60]}...")
+    
+    # Handle single collection or list
+    if not isinstance(collections, list):
+        collections = [collections]
+
+    for coll in collections:
+        results = coll.query(
+            query_texts=[query_text],
+            n_results=3,
+            where={"ingested_timestamp": {"$gte": start_ts}},
+            include=["documents", "metadatas", "distances"]
+        )
+        
+        if results['documents'] and results['documents'][0]:
+            for i in range(len(results['documents'][0])):
+                distance = results['distances'][0][i]
+                # L2 distance to similarity: bounded [0, 1], higher = better
+                score = 1.0 / (1.0 + distance)
+                
+                if score >= SIMILARITY_FLOOR:
+                    scored_docs.append({
+                        "content": results['documents'][0][i],
+                        "source": results['metadatas'][0][i].get('source', coll.name),
+                        "score": score
+                    })
+                elif debug:
+                    safe_text = results['documents'][0][i][:60].encode('ascii', errors='replace').decode('ascii')
+                    print(f"      [REJECTED: {score*100:.1f}%] {coll.name}: {safe_text}...")
+    
+    # Sort by descending score
+    scored_docs = sorted(scored_docs, key=lambda x: x['score'], reverse=True)
     return scored_docs
 
-def cascading_rag_search(news_collection, query_text, current_time, debug=False):
+def cascading_rag_search(collections, query_text, current_time, debug=False):
     """
-    Performs 15m -> 2h cascade. Rejects data below SIMILARITY_FLOOR.
+    Performs 15m -> 2h cascade across all provided collections.
+    Returns (docs, window_label) tuple.
     """
-    # 1. Flash Window (15m) - Primary production reaction
-    docs_15m = fetch_rag_context(news_collection, query_text, current_time, 15, debug)
+    # 1. Flash Window (15m)
+    docs_15m = fetch_rag_context(collections, query_text, current_time, 15, debug)
     if len(docs_15m) >= 2:
         return docs_15m, "15-Minute Flash Reaction"
 
-    # 2. Lagging Window (2h) - Secondary check for older headlines
-    docs_2h = fetch_rag_context(news_collection, query_text, current_time, 120, debug)
+    # 2. Lagging Window (2h)
+    docs_2h = fetch_rag_context(collections, query_text, current_time, 120, debug)
     if len(docs_2h) >= 2:
         return docs_2h, "2-Hour Echo Chamber Check"
 
-    # 3. Recovery Window (24h) - Secondary historical check
-    docs_24h = fetch_rag_context(news_collection, query_text, current_time, 1440, debug)
-    if len(docs_24h) >= 2:
-        return docs_24h, "24-Hour Historical Recovery"
-
-    # 4. Amnesty Window (7 Days) - Final fallback for deep historical audits
-    docs_7d = fetch_rag_context(news_collection, query_text, current_time, 10080, debug)
-    return docs_7d, "7-Day Amnesty Window"
+    # 3. Final Fallback (Empty) - For Ghost Pump detection
+    return [], "Ghost Pump / Echo Chamber Check"
 
 # ---------------------------------------------------------
 # 4. THE BOOKMAKER LLM
 # ---------------------------------------------------------
 def generate_intelligence_brief(market, context_docs, anomaly_type):
-    if not GEMINI_API_KEY:
-        return {"bull_case": "N/A", "bear_case": "N/A", "verdict": "Gemini key missing."}
+    """
+    Sends market anomaly + RAG context to Groq (Llama 3.3 70B) for bull/bear/verdict synthesis.
+    Returns a dict with keys: bull_case, bear_case, verdict.
+    """
+    if not groq_client:
+        return {"bull_case": "N/A", "bear_case": "N/A", "verdict": "GROQ_API_KEY missing."}
 
     # Extract raw text for LLM
     rag_text = "\n\n".join([d['content'] for d in context_docs])
     
-    prompt = f"""
-    Analyze this prediction market anomaly.
-    MARKET: {market['ticker']} | {market['title']}
-    RULES: {market['rules_primary']}
-    ODDS MOVE: {market['previous_odds']*100:.1f}% -> {market['current_odds']*100:.1f}% ({anomaly_type})
-    
-    EVIDENCE:
-    {rag_text}
-    
-    Output JSON with: bull_case, bear_case, verdict.
-    """
+    prompt = f"""Analyze this prediction market anomaly.
+MARKET: {market['ticker']} | {market['title']}
+RULES: {market['rules_primary']}
+ODDS MOVE: {market['previous_odds']*100:.1f}% -> {market['current_odds']*100:.1f}% ({anomaly_type})
+
+EVIDENCE:
+{rag_text}
+
+Respond with ONLY a JSON object containing exactly these keys: bull_case, bear_case, verdict."""
     try:
-        response = model.generate_content(prompt, generation_config=genai.GenerationConfig(response_mime_type="application/json"))
-        res_data = json.loads(response.text)
-        # Ensure we return a dictionary, even if LLM wrapped it in a list
+        response = groq_client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            temperature=0.3
+        )
+        res_data = json.loads(response.choices[0].message.content)
+        
+        # Ensure flat dictionary with string values to prevent Parquet schema errors
         if isinstance(res_data, list) and len(res_data) > 0:
-            return res_data[0]
-        return res_data if isinstance(res_data, dict) else {"bull_case": "N/A", "bear_case": "N/A", "verdict": "Invalid JSON format"}
+            res_data = res_data[0]
+            
+        if isinstance(res_data, dict):
+            # Force all fields to strings, joining lists if necessary
+            for k, v in res_data.items():
+                if isinstance(v, list):
+                    res_data[k] = " ".join([str(item) for item in v])
+                elif isinstance(v, dict):
+                    res_data[k] = json.dumps(v)
+                else:
+                    res_data[k] = str(v)
+            return res_data
+            
+        return {"bull_case": "N/A", "bear_case": "N/A", "verdict": "Invalid JSON format"}
     except Exception as e:
         return {"bull_case": "Error", "bear_case": "Error", "verdict": str(e)}
 
 def save_briefs_to_gold(results):
-    if not results: return
+    """Save intelligence briefs to Gold layer as a timestamped Parquet file."""
+    if not results:
+        return
     os.makedirs(GOLD_BRIEFS, exist_ok=True)
     out_file = os.path.join(GOLD_BRIEFS, f"briefs_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.parquet")
     pd.DataFrame(results).to_parquet(out_file, index=False)
     print(f"[Inference] Saved {len(results)} verdicts to Gold Ledger.")
+    print(f"[Inference] Output file: {os.path.abspath(out_file)}")
 
 # ---------------------------------------------------------
 # 5. MAIN
@@ -183,46 +216,75 @@ def main():
 
     chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
     try:
-        news_collection = chroma_client.get_collection(name="silver_news_enriched")
-    except:
-        print("[Inference] ERROR: Chroma not ready.")
+        active_collections = [
+            chroma_client.get_collection(name="silver_news_enriched"),
+            chroma_client.get_collection(name="silver_gdelt_enriched")
+        ]
+    except Exception as e:
+        print(f"[Inference] ERROR: Chroma collections not ready: {e}")
         return
 
     inference_results = []
     current_time = datetime.now(timezone.utc)
 
     for _, market in volatile_markets.iterrows():
+      try:
         print(f"\n[Inference] ANALYZING: {market['ticker']} (Delta: {market['odds_delta']*100:.1f}%)")
         
-        # Use the Market's own ingestion time as the anchor for context
+        # Use the Market's own ingestion time as the anchor for context retrieval.
         # This fixes the 'Empty Context' bug for historical audits.
         market_time = pd.to_datetime(market['ingested_at'])
         if market_time.tzinfo is None:
             market_time = market_time.replace(tzinfo=timezone.utc)
             
-        # Use ONLY the title for search to maximize similarity (rules_primary is too noisy for RAG)
-        query_text = market['title']
-        context_docs, window_type = cascading_rag_search(news_collection, query_text, market_time, args.debug)
+        # Concatenate Title + Rules for maximum settlement precision (NotebookLM Standard)
+        query_text = f"{market['title']} {market['rules_primary']}"
+        context_docs, window_type = cascading_rag_search(active_collections, query_text, market_time, args.debug)
         
         if args.debug:
             print(f"    > X-Ray Window: {window_type}")
             for d in context_docs:
-                print(f"      [{d['score']*100:.0f}% Match] {d['source']}: {d['content'][:80]}...")
+                safe_text = d['content'][:80].encode('ascii', errors='replace').decode('ascii')
+                print(f"      [{d['score']*100:.0f}% Match] {d['source']}: {safe_text}...")
 
         if not context_docs:
-            print(f"    > No quality news found above {SIMILARITY_FLOOR*100:.0f}% floor. Skipping AI synthesis.")
+            # GHOST PUMP PATH: No corroborating evidence found
+            print(f"    > No quality news found above {SIMILARITY_FLOOR*100:.0f}% floor. Recording GHOST PUMP.")
+            inference_results.append({
+                "ticker": market['ticker'],
+                "title": market['title'],
+                "current_odds": market['current_odds'],
+                "odds_delta": market['odds_delta'],
+                "bull_case": "N/A - No Corroborating News Found",
+                "bear_case": "N/A - No Corroborating News Found",
+                "verdict": f"GHOST PUMP: Price moved {market['odds_delta']*100:.1f}%, but no fundamental news appeared in the {window_type} window above {SIMILARITY_FLOOR*100:.0f}% similarity. This is likely a retail-driven behavioral distortion.",
+                "confidence_score": 0.0,
+                "event_at": market['ingested_at'],
+                "ingested_at": current_time.isoformat()
+            })
             continue
 
+        # EVIDENCE FOUND PATH: Synthesize intelligence via Gemini
         print(f"    > Synthesizing {len(context_docs)} signals via Gemini...")
         brief = generate_intelligence_brief(market, context_docs, window_type)
+        confidence = max([d['score'] for d in context_docs])
         brief.update({
-            "ticker": market['ticker'], "ingested_at": current_time.isoformat(),
-            "odds_delta": market['odds_delta'], "confidence_score": max([d['score'] for d in context_docs])
+            "ticker": market['ticker'],
+            "title": market['title'],
+            "current_odds": market['current_odds'],
+            "odds_delta": market['odds_delta'],
+            "confidence_score": confidence,
+            "event_at": market['ingested_at'],
+            "ingested_at": current_time.isoformat()
         })
         inference_results.append(brief)
         
         print(f"--- VERDICT [{market['ticker']}] ---")
         print(f"VERDICT: {brief['verdict']}")
+
+      except Exception as e:
+        print(f"    > ERROR processing {market['ticker']}: {e}")
+        continue
     
     save_briefs_to_gold(inference_results)
 

@@ -76,9 +76,7 @@ def sync_collection(con, chroma_client, table_path, collection_name, text_cols, 
     except Exception as e:
         print(f"    > ERROR reading {collection_name}: {e}")
         return
-    except Exception as e:
-        print(f"    > ERROR reading {collection_name}: {e}")
-        return
+
 
     if df.empty:
         print("    > No new records found. Skipping.")
