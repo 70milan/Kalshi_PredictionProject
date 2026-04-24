@@ -5,8 +5,8 @@
 # we only diff the small folders we care about.
 # ─────────────────────────────────────────────
 
-$PROD_IP = "100.67.60.86"
-$SOURCE  = "C:\Data Engineering\codeprep\predection_project"
+$PROD_IP = "YOUR_PROD_IP"
+$SOURCE  = "C:\PATH\TO\YOUR\PROJECT"
 $DEST    = "\\$PROD_IP\predection_project"
 
 # ── WHITELIST: Only these folders/files get synced ──

@@ -1,5 +1,5 @@
 # PredictIQ — Docker Ingestion Commands
-# Run these commands from the project root (C:\Data Engineering\codeprep\predection_project)
+# Run these commands from the project root
 
 # ---------------------------------------------------------
 # 1) BUILD THE IMAGE

@@ -17,12 +17,19 @@ _delta_log/
 
 # Temporary / Scratch Files
 tmp/
+scratch/
+artifacts/
+ingestion_text/
 test.json
 test.py
 inspect_parquet.py
 fast_peek.py
 spark_test.py
 peek_bronze.py
+audit_output*.txt
+audit_script.py
+run_full_audit.py
+system_health.py
 temp_*.py
 tmp_schema_check.py
 create_objects.sql  

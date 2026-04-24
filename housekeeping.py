@@ -5,7 +5,8 @@ import csv
 # ─────────────────────────────────────────────
 # 1. STRIP EMOJIS FROM KALSHI SCRIPTS
 # ─────────────────────────────────────────────
-target_dir = r"c:\Data Engineering\codeprep\predection_project\native_ingestion"
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+target_dir = os.path.join(PROJECT_ROOT, "native_ingestion")
 files_to_clean = [
     "flat_kalshi_markets_active.py", 
     "flat_kalshi_markets_historical.py", 
@@ -33,7 +34,7 @@ for fname in files_to_clean:
 # ─────────────────────────────────────────────
 # 2. GENERATE EXPANDED REFERENCE CSVs
 # ─────────────────────────────────────────────
-PROJECT_ROOT = r"c:\Data Engineering\codeprep\predection_project"
+# PROJECT_ROOT already defined above
 REF_DIR = os.path.join(PROJECT_ROOT, "reference")
 os.makedirs(REF_DIR, exist_ok=True)
 

@@ -33,73 +33,73 @@ CREATE SCHEMA IF NOT EXISTS gold;
 -- ── Kalshi Markets ───────────────────────────────────────────────────────────
 
 CREATE OR REPLACE VIEW bronze.kalshi_open_latest AS
-    SELECT * FROM read_parquet('P:/data/bronze/kalshi_markets/open/latest.parquet');
+    SELECT * FROM read_parquet('YOUR_DATA_PATH/bronze/kalshi_markets/open/latest.parquet');
 
 -- open: standard Two-File Pattern (latest.parquet + markets_*.parquet)
 CREATE OR REPLACE VIEW bronze.kalshi_open AS
-    SELECT * FROM read_parquet('P:/data/bronze/kalshi_markets/open/markets_*.parquet', union_by_name = true);
+    SELECT * FROM read_parquet('YOUR_DATA_PATH/bronze/kalshi_markets/open/markets_*.parquet', union_by_name = true);
 
 -- closed: dual-prefix naming (daily_closed_* and historical_closed_*)
 CREATE OR REPLACE VIEW bronze.kalshi_closed AS
-    SELECT * FROM read_parquet('P:/data/bronze/kalshi_markets/closed/*_closed_*.parquet', union_by_name = true);
+    SELECT * FROM read_parquet('YOUR_DATA_PATH/bronze/kalshi_markets/closed/*_closed_*.parquet', union_by_name = true);
 
 -- settled: dual-prefix naming (daily_settled_* and historical_settled_*)
 CREATE OR REPLACE VIEW bronze.kalshi_settled AS
-    SELECT * FROM read_parquet('P:/data/bronze/kalshi_markets/settled/*_settled_*.parquet', union_by_name = true);
+    SELECT * FROM read_parquet('YOUR_DATA_PATH/bronze/kalshi_markets/settled/*_settled_*.parquet', union_by_name = true);
 
 
 -- ── GDELT Global Knowledge Graph ─────────────────────────────────────────────
 
 CREATE OR REPLACE VIEW bronze.gdelt_events_latest AS
-    SELECT * FROM read_parquet('P:/data/bronze/gdelt/gdelt_events/latest.parquet');
+    SELECT * FROM read_parquet('YOUR_DATA_PATH/bronze/gdelt/gdelt_events/latest.parquet');
 
 CREATE OR REPLACE VIEW bronze.gdelt_events AS
-    SELECT * FROM read_parquet('P:/data/bronze/gdelt/gdelt_events/gdelt_*.parquet', union_by_name = true);
+    SELECT * FROM read_parquet('YOUR_DATA_PATH/bronze/gdelt/gdelt_events/gdelt_*.parquet', union_by_name = true);
 
 CREATE OR REPLACE VIEW bronze.gdelt_gkg_latest AS
-    SELECT * FROM read_parquet('P:/data/bronze/gdelt/gdelt_gkg/latest.parquet');
+    SELECT * FROM read_parquet('YOUR_DATA_PATH/bronze/gdelt/gdelt_gkg/latest.parquet');
 
 CREATE OR REPLACE VIEW bronze.gdelt_gkg AS
-    SELECT * FROM read_parquet('P:/data/bronze/gdelt/gdelt_gkg/gkg_*.parquet', union_by_name = true);
+    SELECT * FROM read_parquet('YOUR_DATA_PATH/bronze/gdelt/gdelt_gkg/gkg_*.parquet', union_by_name = true);
 
 
 -- ── News Sentiment Feeds  (live under data/bronze/news/<outlet>/) ─────────────
 
 CREATE OR REPLACE VIEW bronze.news_bbc_latest AS
-    SELECT * FROM read_parquet('P:/data/bronze/bbc/latest.parquet');
+    SELECT * FROM read_parquet('YOUR_DATA_PATH/bronze/bbc/latest.parquet');
 
 CREATE OR REPLACE VIEW bronze.news_bbc AS
-    SELECT * FROM read_parquet('P:/data/bronze/bbc/bbc_*.parquet', union_by_name = true);
+    SELECT * FROM read_parquet('YOUR_DATA_PATH/bronze/bbc/bbc_*.parquet', union_by_name = true);
 
 CREATE OR REPLACE VIEW bronze.news_cnn_latest AS
-    SELECT * FROM read_parquet('P:/data/bronze/cnn/latest.parquet');
+    SELECT * FROM read_parquet('YOUR_DATA_PATH/bronze/cnn/latest.parquet');
 
 CREATE OR REPLACE VIEW bronze.news_cnn AS
-    SELECT * FROM read_parquet('P:/data/bronze/cnn/cnn_*.parquet', union_by_name = true);
+    SELECT * FROM read_parquet('YOUR_DATA_PATH/bronze/cnn/cnn_*.parquet', union_by_name = true);
 
 CREATE OR REPLACE VIEW bronze.news_foxnews_latest AS
-    SELECT * FROM read_parquet('P:/data/bronze/foxnews/latest.parquet');
+    SELECT * FROM read_parquet('YOUR_DATA_PATH/bronze/foxnews/latest.parquet');
 
 CREATE OR REPLACE VIEW bronze.news_foxnews AS
-    SELECT * FROM read_parquet('P:/data/bronze/foxnews/foxnews_*.parquet', union_by_name = true);
+    SELECT * FROM read_parquet('YOUR_DATA_PATH/bronze/foxnews/foxnews_*.parquet', union_by_name = true);
 
 CREATE OR REPLACE VIEW bronze.news_nypost_latest AS
-    SELECT * FROM read_parquet('P:/data/bronze/nypost/latest.parquet');
+    SELECT * FROM read_parquet('YOUR_DATA_PATH/bronze/nypost/latest.parquet');
 
 CREATE OR REPLACE VIEW bronze.news_nypost AS
-    SELECT * FROM read_parquet('P:/data/bronze/nypost/nypost_*.parquet', union_by_name = true);
+    SELECT * FROM read_parquet('YOUR_DATA_PATH/bronze/nypost/nypost_*.parquet', union_by_name = true);
 
 CREATE OR REPLACE VIEW bronze.news_nyt_latest AS
-    SELECT * FROM read_parquet('P:/data/bronze/nyt/latest.parquet');
+    SELECT * FROM read_parquet('YOUR_DATA_PATH/bronze/nyt/latest.parquet');
 
 CREATE OR REPLACE VIEW bronze.news_nyt AS
-    SELECT * FROM read_parquet('P:/data/bronze/nyt/nyt_*.parquet', union_by_name = true);
+    SELECT * FROM read_parquet('YOUR_DATA_PATH/bronze/nyt/nyt_*.parquet', union_by_name = true);
 
 CREATE OR REPLACE VIEW bronze.news_thehindu_latest AS
-    SELECT * FROM read_parquet('P:/data/bronze/thehindu/latest.parquet');
+    SELECT * FROM read_parquet('YOUR_DATA_PATH/bronze/thehindu/latest.parquet');
 
 CREATE OR REPLACE VIEW bronze.news_thehindu AS
-    SELECT * FROM read_parquet('P:/data/bronze/thehindu/thehindu_*.parquet', union_by_name = true);
+    SELECT * FROM read_parquet('YOUR_DATA_PATH/bronze/thehindu/thehindu_*.parquet', union_by_name = true);
 
 
 -- =============================================================================
@@ -109,25 +109,25 @@ CREATE OR REPLACE VIEW bronze.news_thehindu AS
 -- =============================================================================
 
 CREATE OR REPLACE VIEW silver.gdelt_events_history AS
-    SELECT * FROM delta_scan('P:/data/silver/gdelt_events_history');
+    SELECT * FROM delta_scan('YOUR_DATA_PATH/silver/gdelt_events_history');
 
 CREATE OR REPLACE VIEW silver.gdelt_events_current AS
-    SELECT * FROM delta_scan('P:/data/silver/gdelt_events_current');
+    SELECT * FROM delta_scan('YOUR_DATA_PATH/silver/gdelt_events_current');
 
 CREATE OR REPLACE VIEW silver.gdelt_gkg_history AS
-    SELECT * FROM delta_scan('P:/data/silver/gdelt_gkg_history');
+    SELECT * FROM delta_scan('YOUR_DATA_PATH/silver/gdelt_gkg_history');
 
 CREATE OR REPLACE VIEW silver.gdelt_gkg_current AS
-    SELECT * FROM delta_scan('P:/data/silver/gdelt_gkg_current');
+    SELECT * FROM delta_scan('YOUR_DATA_PATH/silver/gdelt_gkg_current');
 
 CREATE OR REPLACE VIEW silver.kalshi_markets_current AS
-    SELECT * FROM delta_scan('P:/data/silver/kalshi_markets_current');
+    SELECT * FROM delta_scan('YOUR_DATA_PATH/silver/kalshi_markets_current');
 
 CREATE OR REPLACE VIEW silver.kalshi_markets_history AS
-    SELECT * FROM delta_scan('P:/data/silver/kalshi_markets_history');
+    SELECT * FROM delta_scan('YOUR_DATA_PATH/silver/kalshi_markets_history');
 
 CREATE OR REPLACE VIEW silver.news_articles_enriched AS
-    SELECT * FROM delta_scan('P:/data/silver/news_articles_enriched');
+    SELECT * FROM delta_scan('YOUR_DATA_PATH/silver/news_articles_enriched');
 
 
 -- =============================================================================
@@ -136,19 +136,19 @@ CREATE OR REPLACE VIEW silver.news_articles_enriched AS
 -- =============================================================================
 
 CREATE OR REPLACE VIEW gold.gdelt_summaries AS
-    SELECT * FROM delta_scan('P:/data/gold/gdelt_summaries');
+    SELECT * FROM delta_scan('YOUR_DATA_PATH/gold/gdelt_summaries');
 
 CREATE OR REPLACE VIEW gold.gdelt_summaries_history AS
-    SELECT * FROM delta_scan('P:/data/gold/gdelt_summaries_history');
+    SELECT * FROM delta_scan('YOUR_DATA_PATH/gold/gdelt_summaries_history');
 
 CREATE OR REPLACE VIEW gold.news_summaries AS
-    SELECT * FROM delta_scan('P:/data/gold/news_summaries');
+    SELECT * FROM delta_scan('YOUR_DATA_PATH/gold/news_summaries');
 
 CREATE OR REPLACE VIEW gold.news_summaries_history AS
-    SELECT * FROM delta_scan('P:/data/gold/news_summaries_history');
+    SELECT * FROM delta_scan('YOUR_DATA_PATH/gold/news_summaries_history');
 
 CREATE OR REPLACE VIEW gold.mispricing_scores AS
-    SELECT * FROM delta_scan('P:/data/gold/mispricing_scores');
+    SELECT * FROM delta_scan('YOUR_DATA_PATH/gold/mispricing_scores');
 
 CREATE OR REPLACE VIEW gold.mispricing_scores_history AS
-    SELECT * FROM delta_scan('P:/data/gold/mispricing_scores_history');
+    SELECT * FROM delta_scan('YOUR_DATA_PATH/gold/mispricing_scores_history');

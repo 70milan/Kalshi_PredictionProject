@@ -2,7 +2,7 @@ import os
 import shutil
 import glob
 
-PROJECT_ROOT = r"c:\Data Engineering\codeprep\predection_project"
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 NATIVE_DIR = os.path.join(PROJECT_ROOT, "native_ingestion")
 DOCKER_DIR = os.path.join(PROJECT_ROOT, "ingestion")
 
