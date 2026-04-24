@@ -1,6 +1,11 @@
 """Quick test to verify Chroma distance metric and embedding function alignment."""
-import chromadb
 import os
+import sys
+
+__import__('pysqlite3')
+sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+
+import chromadb
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CHROMA_PATH = os.path.join(PROJECT_ROOT, "data", "chroma")

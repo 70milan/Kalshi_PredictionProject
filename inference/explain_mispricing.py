@@ -1,5 +1,9 @@
 import os
 import sys
+#import sys
+__import__('pysqlite3')
+sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+
 import duckdb
 import chromadb
 from groq import Groq

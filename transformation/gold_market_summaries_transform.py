@@ -194,15 +194,22 @@ def main():
         if df_gold is None:
             return
             
+        import shutil
         row_count = df_gold.count()
         print(f"[Gold Synthesizer] Computed {row_count} Market Scores. Writing to Delta...")
-        
-        # Save History (Append-only Ledger)
-        history_path = gold_path + "_history"
-        df_gold.write.format("delta").mode("append").option("mergeSchema", "true").save(history_path)
 
-        # Save Current (Overwrite UI Snapshot)
+        # Wipe both paths so Delta always starts at version 000 (prevents log gaps on overwrite)
+        history_path = gold_path + "_history"
+        for p in [gold_path, history_path]:
+            if os.path.exists(p):
+                shutil.rmtree(p)
+                print(f"[Gold Synthesizer] Cleared old Delta at {p}")
+
+        # Save Current snapshot (fresh write — always version 000)
         df_gold.write.format("delta").mode("overwrite").option("mergeSchema", "true").save(gold_path)
+
+        # Save History ledger (fresh append ledger)
+        df_gold.write.format("delta").mode("overwrite").option("mergeSchema", "true").save(history_path)
         
         print("[Gold Synthesizer] SUCCESS. Scoring Ledger updated.")
         
