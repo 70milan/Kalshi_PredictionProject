@@ -1,11 +1,17 @@
 import os
 import sys
-
-__import__('pysqlite3')
-sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+import platform
+# ChromaDB/SQLite patch — only needed on Linux (Docker). Windows uses native SQLite.
+if platform.system() == "Linux":
+    try:
+        __import__('pysqlite3')
+        sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+    except ImportError:
+        pass
 
 import duckdb
 import chromadb
+import json
 from datetime import datetime, timezone
 from sentence_transformers import SentenceTransformer
 
@@ -14,6 +20,7 @@ from sentence_transformers import SentenceTransformer
 # ─────────────────────────────────────────────
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+WATERMARK_FILE = os.path.join(PROJECT_ROOT, "data", ".vector_watermark.json")
 
 # Delta Lake Paths
 SILVER_NEWS  = os.path.join(PROJECT_ROOT, "data", "silver", "news_articles_enriched")
@@ -30,40 +37,48 @@ MODEL_NAME = "all-MiniLM-L6-v2"
 # VECTOR SYNC ENGINE
 # ─────────────────────────────────────────────
 
+def get_watermarks():
+    if os.path.exists(WATERMARK_FILE):
+        with open(WATERMARK_FILE, 'r') as f:
+            return json.load(f)
+    return {}
+
+def save_watermark(collection_name, timestamp):
+    marks = get_watermarks()
+    marks[collection_name] = str(timestamp)
+    with open(WATERMARK_FILE, 'w') as f:
+        json.dump(marks, f, indent=4)
+
 def sync_collection(con, chroma_client, table_path, collection_name, text_cols, id_col, sentiment_col="sentiment"):
     """
-    Incremental sync from Delta table to ChromaDB collection.
+    Incremental sync from Delta table to ChromaDB collection using a persistent watermark.
     """
     print(f"\n[Vector Sync] Syncing {collection_name} ...")
     
     # 1. Get/Create Collection
-    collection = chroma_client.get_or_create_collection(name=collection_name)
+    try:
+        collection = chroma_client.get_or_create_collection(name=collection_name)
+    except Exception as e:
+        print(f"    > FATAL ERROR: Could not get/create collection '{collection_name}': {e}")
+        return
     
-    # 2. Watermark: Get max ingested_at from Chroma metadata if available
-    # Since Chroma didn't expose a native 'max', we query a subset of recent items
-    latest_timestamp = None
-    count = collection.count()
-    if count > 0:
-        # For large collections, fetching ALL metadata crashes Chroma (SQL variable limit)
-        # We fetch the last 1000 items, assuming news/events are added somewhat in order.
-        res = collection.get(include=['metadatas'], limit=1000)
-        if res['metadatas']:
-            timestamps = [m.get('ingested_at') for m in res['metadatas'] if m.get('ingested_at')]
-            if timestamps:
-                latest_timestamp = max(timestamps)
+    # 2. Load Persistent Watermark
+    watermarks = get_watermarks()
+    latest_timestamp = watermarks.get(collection_name)
     
-    print(f"    > Current Chroma count: {count}")
+    print(f"    > Current Chroma count: {collection.count()}")
     if latest_timestamp:
         print(f"    > Watermark: {latest_timestamp}")
 
     # 3. Read from Delta using DuckDB
-    # Use array_to_string for GDELT array columns
+    # Use array_to_string for GDELT array columns and truncate to 2000 chars at SQL level
+    # This prevents massive strings (40k+) from choking memory during transfer to Pandas.
     select_parts = []
     for c in text_cols:
         if "array" in c:
-            select_parts.append(f"array_to_string({c}, ', ') as {c}")
+            select_parts.append(f"substring(array_to_string({c}, ', '), 1, 2000) as {c}")
         else:
-            select_parts.append(c)
+            select_parts.append(f"substring({c}, 1, 2000) as {c}")
     
     # Define source/sentiment
     src_val = "source" if "news" in collection_name else "'GDELT' as source"
@@ -76,6 +91,8 @@ def sync_collection(con, chroma_client, table_path, collection_name, text_cols, 
             query += f" WHERE ingested_at > '{latest_timestamp}'"
         
         query += " ORDER BY ingested_at ASC"
+        
+        print(f"    > Fetching data from Delta (this may take a few minutes for large tables)...")
         df = con.execute(query).df()
     except Exception as e:
         print(f"    > ERROR reading {collection_name}: {e}")
@@ -92,24 +109,30 @@ def sync_collection(con, chroma_client, table_path, collection_name, text_cols, 
     model = SentenceTransformer(MODEL_NAME)
 
     # 5. Batch Upsert
+    import time
     batch_size = 50
-    for i in range(0, len(df), batch_size):
+    total_new = len(df)
+    print(f"    > Starting embedding of {total_new} records in batches of {batch_size}...")
+    
+    for i in range(0, total_new, batch_size):
+        batch_start = time.time()
         batch = df.iloc[i : i + batch_size]
-        
-        # Deduplicate within the batch to prevent Chroma errors
         batch = batch.drop_duplicates(subset=[id_col])
         
-        # Concatenate text columns for embedding
-        # We use a lambda to ensure every element is stringified to avoid join type errors
-        combined_text = batch[text_cols].apply(lambda row: " | ".join(row.fillna("").astype(str)), axis=1).tolist()
+        # 5.1 Truncate
+        combined_text = batch[text_cols].apply(
+            lambda row: " | ".join(row.fillna("").astype(str))[:2000], 
+            axis=1
+        ).tolist()
         
-        # Generate Embeddings
+        # 5.2 Encode
+        encode_start = time.time()
         embeddings = model.encode(combined_text).tolist()
+        encode_duration = time.time() - encode_start
         
-        # Prepare Metadata
-        ids = batch[id_col].astype(str).tolist()
-        
-        # Sanitize metadata values
+        # 5.3 Upsert
+        upsert_start = time.time()
+        ids = [f"{collection_name}_{str(x)}" for x in batch[id_col].tolist()]
         metadatas = []
         for _, row in batch.iterrows():
             ingested_at = str(row["ingested_at"])
@@ -117,7 +140,6 @@ def sync_collection(con, chroma_client, table_path, collection_name, text_cols, 
                 ts = int(datetime.fromisoformat(ingested_at.replace('Z', '+00:00')).timestamp())
             except:
                 ts = 0
-                
             metadatas.append({
                 "ingested_at": ingested_at,
                 "ingested_timestamp": ts,
@@ -125,14 +147,20 @@ def sync_collection(con, chroma_client, table_path, collection_name, text_cols, 
                 "sentiment": float(row.get("sentiment", 0.0))
             })
 
-        # Insert/Update into Chroma
         collection.upsert(
             ids=ids,
             embeddings=embeddings,
             documents=combined_text,
             metadatas=metadatas
         )
-        print(f"    > Batch {i//batch_size + 1} complete ({len(batch)} rows synced).")
+        
+        batch_duration = time.time() - batch_start
+        print(f"    > Batch {i//batch_size + 1} complete | {len(batch)} rows | Encode: {encode_duration:.1f}s | Total: {batch_duration:.1f}s")
+
+    # 6. Update Watermark
+    new_max = df['ingested_at'].max()
+    save_watermark(collection_name, new_max)
+    print(f"    > Watermark updated to: {new_max}")
 
 def main():
     print("=" * 60)

@@ -66,8 +66,8 @@ GOLD_SCRIPTS = [
 # Phase 3: Vector Bridge (Delta -> ChromaDB)
 VECTOR_SYNC_SCRIPT = os.path.join(PROJECT_ROOT, "rag", "embed_silver_data.py")
 
-# Phase 4: Inference (LLM Synthesis)
-INFERENCE_SCRIPT = os.path.join(PROJECT_ROOT, "inference", "explain_mispricing.py")
+# Phase 4: Inference (LLM Synthesis - Predictive Scanner)
+INFERENCE_SCRIPT = os.path.join(PROJECT_ROOT, "inference", "predict_movements.py")
 
 POLL_INTERVAL = 300   # 5 minutes
 

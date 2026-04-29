@@ -80,3 +80,9 @@ docker image prune -f
 - **Ingestion**: `ingest-bbc`, `ingest-cnn`, `ingest-fox`, `ingest-hindu`, `ingest-nypost`, `ingest-nyt`, `ingest-gdelt-events`, `ingest-gdelt-gkg`, `ingest-kalshi-active`, `ingest-kalshi-daily`
 - **Transformation**: `transform-gdelt-events`, `transform-gdelt-gkg`, `transform-kalshi`, `transform-news`
 - **Utility**: `spark-app`
+
+## Run RAG and Inference Scripts
+```bash
+docker compose run --rm spark-app python3 rag/embed_silver_data.py
+docker compose run --rm spark-app python3 inference/predict_movements.py
+```

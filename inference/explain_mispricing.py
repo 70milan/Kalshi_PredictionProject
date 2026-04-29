@@ -1,8 +1,13 @@
 import os
 import sys
-#import sys
-__import__('pysqlite3')
-sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+import platform
+# ChromaDB/SQLite patch — only needed on Linux (Docker). Windows uses native SQLite.
+if platform.system() == "Linux":
+    try:
+        __import__('pysqlite3')
+        sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+    except ImportError:
+        pass
 
 import duckdb
 import chromadb
@@ -83,6 +88,7 @@ def fetch_rag_context(collections, query_text, current_time, window_mins=15, deb
     Uses L2 distance -> similarity conversion: score = 1 / (1 + distance).
     """
     start_ts = int((current_time - timedelta(minutes=window_mins)).timestamp())
+    end_ts   = int(current_time.timestamp())
     scored_docs = []
     
     # Handle single collection or list
@@ -93,7 +99,12 @@ def fetch_rag_context(collections, query_text, current_time, window_mins=15, deb
         results = coll.query(
             query_texts=[query_text],
             n_results=3,
-            where={"ingested_timestamp": {"$gte": start_ts}},
+            where={
+                "$and": [
+                    {"ingested_timestamp": {"$gte": start_ts}},
+                    {"ingested_timestamp": {"$lte": end_ts}}
+                ]
+            },
             include=["documents", "metadatas", "distances"]
         )
         

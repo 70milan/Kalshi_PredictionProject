@@ -1,8 +1,13 @@
 import os
 import sys
-
-__import__('pysqlite3')
-sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+import platform
+# ChromaDB/SQLite patch — only needed on Linux (Docker). Windows uses native SQLite.
+if platform.system() == "Linux":
+    try:
+        __import__('pysqlite3')
+        sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+    except ImportError:
+        pass
 
 import chromadb
 from datetime import datetime
