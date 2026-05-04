@@ -45,7 +45,7 @@ def get_watermark(spark, silver_history_path):
     return None
 
 
-def discover_bronze_files(bronze_base):
+def discover_bronze_files(bronze_base, watermark):
     """
     Recursively walks bronze_base and returns all timestamped .parquet files.
     Explicitly excludes latest.parquet to prevent double-ingestion.
@@ -54,10 +54,24 @@ def discover_bronze_files(bronze_base):
     files = []
     if not os.path.exists(bronze_base):
         return files
+        
+    watermark_ts = 0
+    if watermark:
+        try:
+            from dateutil import parser
+            watermark_ts = parser.parse(watermark).timestamp()
+        except Exception:
+            watermark_ts = 0
+
     for root, dirs, fnames in os.walk(bronze_base):
         for fname in fnmatch.filter(fnames, "*.parquet"):
             if fname != "latest.parquet":
-                files.append(os.path.join(root, fname))
+                filepath = os.path.join(root, fname)
+                try:
+                    if os.path.getmtime(filepath) > watermark_ts:
+                        files.append(filepath)
+                except OSError:
+                    continue
     return sorted(files)
 
 
@@ -209,7 +223,7 @@ def main():
         print(f"[Silver GDELT GKG] Watermark: {watermark}")
 
         # Step 2: Discover Bronze files
-        bronze_files = discover_bronze_files(bronze_base)
+        bronze_files = discover_bronze_files(bronze_base, watermark)
         if not bronze_files:
             print("[Silver GDELT GKG] No Bronze files found. Exiting.")
             return

@@ -60,12 +60,36 @@ def read_bronze_incremental(spark, news_sources, ROOT, watermarks):
         if not os.path.isdir(source_dir):
             continue
             
+        # Map folder names to database source names to fix watermark lookup
+        SOURCE_MAP = {
+            "foxnews": "fox news",
+            "nypost": "ny post",
+            "hindu": "the hindu"
+        }
+        
+        # Apply source-specific watermark
+        base_source = source.strip().lower()
+        source_key = SOURCE_MAP.get(base_source, base_source)
+        
+        watermark_ts = 0
+        if source_key in watermarks:
+            try:
+                watermark_ts = parser.parse(str(watermarks[source_key])).timestamp()
+            except Exception:
+                pass
+                
         # Discover files for this specific source
         source_files = []
         for r, d, f in os.walk(source_dir):
             for filename in fnmatch.filter(f, "*.parquet"):
-                # Always safely include latest.parquet as the watermark will filter the internals
-                source_files.append(os.path.join(r, filename))
+                if filename == "latest.parquet":
+                    continue
+                filepath = os.path.join(r, filename)
+                try:
+                    if os.path.getmtime(filepath) > watermark_ts:
+                        source_files.append(filepath)
+                except OSError:
+                    continue
         
         if not source_files:
             continue
@@ -73,10 +97,9 @@ def read_bronze_incremental(spark, news_sources, ROOT, watermarks):
         # Read files for this source
         df_source = spark.read.option("mergeSchema", "true").parquet(*source_files)
         
-        # Apply source-specific watermark
-        source_key = source.strip().lower()
         if source_key in watermarks:
             wm = str(watermarks[source_key])
+
             df_source = df_source.filter(F.col("ingested_at") > wm)
             
         dfs.append(df_source)

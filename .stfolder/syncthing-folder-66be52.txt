@@ -1,0 +1,5 @@
+# This directory is a Syncthing folder marker.
+# Do not delete.
+
+folderID: predictiq-code
+created: 2026-04-28T22:31:41-04:00

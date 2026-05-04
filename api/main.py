@@ -32,7 +32,8 @@ load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 # CONFIG
 # ─────────────────────────────────────────────
 PROJECT_ROOT     = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BRIEFS_GLOB      = os.path.join(PROJECT_ROOT, "data", "gold", "intelligence_briefs", "*.parquet")
+BRIEFS_PATH      = os.path.join(PROJECT_ROOT, "data", "gold", "intelligence_briefs")
+SIMULATED_TRADES_PATH = os.path.join(PROJECT_ROOT, "data", "gold", "simulated_trades.csv")
 KALSHI_BASE_URL  = "https://trading-api.kalshi.com/trade-api/v2"
 KALSHI_API_KEY   = os.getenv("KALSHI_API_KEY")
 KALSHI_API_SECRET= os.getenv("KALSHI_API_SECRET", "")
@@ -73,30 +74,27 @@ def _sign_kalshi_request(method: str, path: str) -> dict:
 @app.get("/api/intelligence")
 def get_intelligence():
     """Returns the latest unique AI Intelligence Briefs joined with Kelly sizing."""
-    parquet_files = glob.glob(BRIEFS_GLOB)
-    if not parquet_files:
+    if not os.path.exists(BRIEFS_PATH):
         return {"briefs": [], "safe_mode": SAFE_MODE}
 
     con = duckdb.connect()
     try:
-        # Latest brief per ticker with deduplication
+        con.execute("INSTALL delta; LOAD delta;")
         query = f"""
-            WITH ranked AS (
-                SELECT *, ROW_NUMBER() OVER(PARTITION BY ticker ORDER BY ingested_at DESC) as rn
-                FROM read_parquet({[str(p) for p in parquet_files]!r})
-                WHERE verdict NOT LIKE '%GHOST PUMP%'
-                  AND verdict NOT LIKE '%Error%'
-            )
             SELECT
                 ticker, title, current_odds, odds_delta,
                 bull_case, bear_case, verdict, confidence_score,
                 ingested_at
-            FROM ranked
-            WHERE rn = 1
+            FROM delta_scan('{BRIEFS_PATH}')
+            WHERE verdict NOT LIKE '%GHOST PUMP%'
+              AND verdict NOT LIKE '%Error%'
             ORDER BY odds_delta DESC
             LIMIT 50
         """
         df = con.execute(query).df()
+    except Exception as e:
+        print(f"[API ERROR] {e}")
+        return {"briefs": [], "safe_mode": SAFE_MODE, "error": str(e)}
     finally:
         con.close()
 
@@ -151,11 +149,23 @@ class TradeRequest(BaseModel):
 def execute_trade(trade: TradeRequest):
     """Submits a trade to Kalshi. Guard-railed by SAFE_MODE."""
     if SAFE_MODE:
-        # Safe mode: log the intent but don't actually fire
-        print(f"[SAFE MODE] Would trade: {trade.count}x {trade.ticker} @ {trade.price_cents}¢ ({trade.side.upper()})")
+        # ─────────────────────────────────────────────
+        # LOG SIMULATED TRADE
+        # ─────────────────────────────────────────────
+        file_exists = os.path.isfile(SIMULATED_TRADES_PATH)
+        with open(SIMULATED_TRADES_PATH, "a", encoding="utf-8") as f:
+            if not file_exists:
+                f.write("timestamp,ticker,side,count,price_cents,total_risk_usd\n")
+            
+            ts = datetime.now(timezone.utc).isoformat()
+            risk = (trade.count * trade.price_cents) / 100.0
+            f.write(f"{ts},{trade.ticker},{trade.side},{trade.count},{trade.price_cents},{risk:.2f}\n")
+
+        print(f"[SAFE MODE] Logged simulated trade: {trade.count}x {trade.ticker} @ {trade.price_cents}¢")
+        
         return {
-            "status": "SAFE_MODE_SIMULATED",
-            "message": "Trade logged but NOT submitted. Set SAFE_MODE=false in .env to enable live execution.",
+            "status": "SAFE_MODE_LOGGED",
+            "message": f"Trade recorded in {os.path.basename(SIMULATED_TRADES_PATH)}",
             "trade": trade.dict()
         }
 

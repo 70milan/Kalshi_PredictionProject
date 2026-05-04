@@ -1,6 +1,6 @@
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 # PySpark Windows Fixes
 os.environ["PYSPARK_PYTHON"] = sys.executable
@@ -73,10 +73,17 @@ def setup_dummy_mapping_if_missing():
 
 def generate_mispricing_scores(spark, kalshi_history_path, gdelt_summaries_path, news_summaries_path, mapping_file):
     # 1. Load Kalshi Current State with Velocity Deltas
+    # Use a 48-hour sliding window — enough for velocity math, prevents full-history scan
+    lookback_cutoff = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
     df_k = spark.read.format("delta").load(kalshi_history_path)
     if "ticker" not in df_k.columns or "ingested_at" not in df_k.columns:
         return None
-    df_k = df_k.filter(F.col("ticker").isNotNull() & F.col("ingested_at").isNotNull())
+    df_k = df_k.filter(
+        F.col("ticker").isNotNull() &
+        F.col("ingested_at").isNotNull() &
+        (F.col("ingested_at").cast("string") >= lookback_cutoff)
+    )
+    print(f"[Gold Synthesizer] 48h window filter applied. Cutoff: {lookback_cutoff}")
 
     # Ensure series_ticker exists (fallback to prefix if missing)
     if "series_ticker" not in df_k.columns:

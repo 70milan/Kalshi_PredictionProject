@@ -1,6 +1,6 @@
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 # PySpark Windows Fixes
 os.environ["PYSPARK_PYTHON"] = sys.executable
@@ -16,8 +16,13 @@ def generate_news_summaries(spark, silver_news_path):
     if not os.path.exists(os.path.join(silver_news_path, "_delta_log")):
         return None
 
+    # Hard 90-day cap at read time — velocity windows never exceed 90 days
+    cutoff_90d = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+    print(f"[Gold News] 90-day read window applied. Cutoff: {cutoff_90d[:19]}")
+
     # 1. Load Silver News
-    df = spark.read.format("delta").load(silver_news_path)
+    df = spark.read.format("delta").load(silver_news_path) \
+        .filter(F.col("ingested_at").cast("string") >= cutoff_90d)
     
     # Filter rows with missing published_at (now fixed in silver)
     df = df.filter(F.col("published_at").isNotNull())

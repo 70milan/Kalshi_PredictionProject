@@ -6,7 +6,7 @@ USER root
 # Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --timeout 600 --retries 5 -r requirements.txt
 
 # Pre-download Delta Lake JARs at build time so Ivy resolution
 # never happens at runtime (fixes JAVA_GATEWAY_EXITED crashes)

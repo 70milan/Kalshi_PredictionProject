@@ -48,29 +48,57 @@ def normalize_types(df):
 
 def read_bronze_incremental(spark, bronze_base, watermark):
     """
-    Reads each Kalshi Parquet file INDIVIDUALLY to avoid schema merge
-    conflicts (DOUBLE vs BIGINT on the same column across files).
-    Normalizes types per-file, then unions with allowMissingColumns.
+    Reads only NEW Kalshi Parquet files by comparing file modification times
+    against the existing Silver watermark. This avoids the O(N) bottleneck
+     of opening hundreds of historical files.
     """
     all_files = []
+    # Convert watermark timestamp to unix seconds if it exists
+    watermark_ts = 0
+    if watermark:
+        try:
+            # Handle both string and datetime watermarks
+            if isinstance(watermark, str):
+                from dateutil import parser
+                watermark_ts = parser.parse(watermark).timestamp()
+            else:
+                watermark_ts = watermark.timestamp()
+        except Exception:
+            watermark_ts = 0
+
+    print(f"[Silver Kalshi]   Scanning Bronze directory: {bronze_base}")
     for r, d, f in os.walk(bronze_base):
         for filename in fnmatch.filter(f, '*.parquet'):
             if filename == "latest.parquet":
                 continue
-            all_files.append(os.path.join(r, filename))
+            filepath = os.path.join(r, filename)
+            
+            # Optimization: Only add to the read list if the file is NEWER than our watermark
+            try:
+                if os.path.getmtime(filepath) > watermark_ts:
+                    all_files.append(filepath)
+            except OSError:
+                continue
 
     if not all_files:
-        raise ValueError("No Bronze Parquet files found in any Kalshi subdirectory!")
+        print("[Silver Kalshi]   No files newer than watermark found on disk.")
+        return spark.createDataFrame([], "ticker string, ingested_at string") # Return empty with schema dummy
 
-    print(f"[Silver Kalshi]   Found {len(all_files)} individual Parquet files. Reading per-file...")
+    print(f"[Silver Kalshi]   Found {len(all_files)} NEW Parquet files. Reading...")
 
     frames = []
     for filepath in all_files:
-        df_single = spark.read.parquet(filepath)
-        df_single = normalize_types(df_single)
-        frames.append(df_single)
+        try:
+            df_single = spark.read.parquet(filepath)
+            df_single = normalize_types(df_single)
+            frames.append(df_single)
+        except Exception as e:
+            print(f"[Silver Kalshi]   WARNING: Skipping corrupt file {filepath}: {e}")
 
-    # Union all with allowMissingColumns for fields that only exist in some files
+    if not frames:
+        return spark.createDataFrame([], "ticker string, ingested_at string")
+
+    # Union all with allowMissingColumns
     df = frames[0]
     for frame in frames[1:]:
         df = df.unionByName(frame, allowMissingColumns=True)
@@ -125,8 +153,12 @@ def write_current(spark, df, silver_current):
                 .whenNotMatchedInsertAll() \
                 .execute()
         except Exception as e:
-            print(f"[Silver Kalshi] Current table corrupted, rebuilding: {e}")
-            latest_df.write.format("delta").mode("overwrite").option("mergeSchema", "true").save(silver_current)
+            print(f"[Silver Kalshi] Schema evolution detected! Rebuilding Current table properly from History: {e}")
+            # Rebuild the entire current table from history so we don't lose old markets
+            history_df = spark.read.format("delta").load(silver_current.replace("_current", "_history"))
+            combined_df = history_df.unionByName(latest_df, allowMissingColumns=True)
+            rebuild_df = combined_df.withColumn("rn", F.row_number().over(windowSpec)).filter(F.col("rn") == 1).drop("rn")
+            rebuild_df.write.format("delta").mode("overwrite").option("mergeSchema", "true").save(silver_current)
     else:
         latest_df.write.format("delta").mode("overwrite").option("mergeSchema", "true").save(silver_current)
 
@@ -160,6 +192,7 @@ def main():
         .config("spark.driver.memory", "4g") \
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension") \
         .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog") \
+        .config("spark.databricks.delta.schema.autoMerge.enabled", "true") \
         .config("spark.sql.parquet.enableVectorizedReader", "false")
     if ivy_dir:
         builder = builder.config("spark.jars.ivy", ivy_dir)

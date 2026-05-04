@@ -69,7 +69,7 @@ VECTOR_SYNC_SCRIPT = os.path.join(PROJECT_ROOT, "rag", "embed_silver_data.py")
 # Phase 4: Inference (LLM Synthesis - Predictive Scanner)
 INFERENCE_SCRIPT = os.path.join(PROJECT_ROOT, "inference", "predict_movements.py")
 
-POLL_INTERVAL = 300   # 5 minutes
+POLL_INTERVAL = 300   # 5 minutes AFTER the cycle completes (not a fixed cadence)
 
 
 # ─────────────────────────────────────────────
@@ -184,6 +184,7 @@ def is_kalshi_api_busy():
 
 def run_etl_cycle():
     """Execute one full ETL cycle: Silver -> Gold -> Settlement (last)."""
+    cycle_start_time = time.time()
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     print(f"\n{'='*60}")
     print(f" PredictIQ ETL Orchestrator")
@@ -200,7 +201,7 @@ def run_etl_cycle():
         print("-" * 40)
         silver_ok = 0
         for script in SILVER_SCRIPTS:
-            if run_script(script, timeout_seconds=900):
+            if run_script(script, timeout_seconds=1800):  # 30 min for large catch-up runs
                 silver_ok += 1
         print(f"    Silver: {silver_ok}/{len(SILVER_SCRIPTS)} completed.")
 
@@ -228,7 +229,7 @@ def run_etl_cycle():
         # --- Phase 4: Inference Engine ---
         print("\n[Phase 4/4] AI Inference & Mispricing Detection")
         print("-" * 40)
-        run_script(INFERENCE_SCRIPT, timeout_seconds=600)
+        run_script(INFERENCE_SCRIPT, timeout_seconds=1800)  # 30 min for large market batches
 
     # --- Phase 5: Daily Settlement (once per day, AFTER transforms) ---
     if should_run_daily_settlement():
@@ -244,6 +245,10 @@ def run_etl_cycle():
     else:
         print("\n[Phase 5/5] Daily Settlement -- already ran today, skipping.")
 
+    cycle_duration = time.time() - cycle_start_time
+    mins = int(cycle_duration // 60)
+    secs = int(cycle_duration % 60)
+    print(f"\n[ETL] Cycle completed in {mins}m {secs}s")
     print(f"{'='*60}\n")
 
 

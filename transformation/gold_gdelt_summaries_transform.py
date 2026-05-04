@@ -1,6 +1,6 @@
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 # PySpark Windows Fixes
 os.environ["PYSPARK_PYTHON"] = sys.executable
@@ -21,8 +21,14 @@ def generate_gdelt_summaries(spark, gkg_path, events_path):
         print("[Gold GDELT] No silver history found. Exiting.")
         return None
 
+    # Hard 90-day cap at read time — velocity windows never exceed 90 days,
+    # so reading older data wastes compute with zero signal benefit
+    cutoff_90d = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+    print(f"[Gold GDELT] 90-day read window applied. Cutoff: {cutoff_90d[:19]}")
+
     # 1. Load and Standardize GKG Entities
     df_gkg = spark.read.format("delta").load(gkg_path) \
+        .filter(F.col("ingested_at").cast("string") >= cutoff_90d) \
         .select("ingested_at", "raw_tone_stats", "persons_array", "themes_array", "orgs_array", "locs_array")
     
     df_gkg = df_gkg.withColumn("tone", F.split(F.col("raw_tone_stats"), ",").getItem(0).cast("double"))

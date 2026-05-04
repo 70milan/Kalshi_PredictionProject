@@ -50,7 +50,8 @@ def get_predictive_candidates(con, min_score=80.0):
     SELECT ticker, title, yes_bid as current_odds, delta_15m, mispricing_score, max_spike_multiplier, sentiment_signal, ingested_at
     FROM delta_scan('{GOLD_MISPRICING}')
     WHERE flagged_candidate = true AND mispricing_score >= {min_score}
-    ORDER BY mispricing_score DESC;
+    ORDER BY mispricing_score DESC, delta_15m ASC
+    LIMIT 20;
     """
     try:
         df = con.execute(query).df()
@@ -191,6 +192,11 @@ def main():
         print(f"    > Synthesizing {len(context_docs)} signals for predictive edge...")
         brief = generate_predictive_brief(market, context_docs)
         
+        # Ensure all LLM outputs are flat strings to prevent PySpark MapType vs StringType schema crashes
+        for k in list(brief.keys()):
+            if not isinstance(brief[k], str):
+                brief[k] = json.dumps(brief[k]) if isinstance(brief[k], (dict, list)) else str(brief[k])
+        
         confidence = max([d['score'] for d in context_docs])
         brief.update({
             "ticker": market['ticker'],
@@ -206,10 +212,43 @@ def main():
         print(f"VERDICT: {brief['verdict']}")
 
     if inference_results:
-        os.makedirs(GOLD_BRIEFS, exist_ok=True)
-        out_file = os.path.join(GOLD_BRIEFS, f"predictive_briefs_{current_time.strftime('%Y%m%d_%H%M%S')}.parquet")
-        pd.DataFrame(inference_results).to_parquet(out_file, index=False)
-        print(f"\n[Predictive] Saved {len(inference_results)} opportunities to Gold Briefs.")
+        # --- NEW: Delta Table Storage for Dashboard & History ---
+        from pyspark.sql import SparkSession
+        from delta import configure_spark_with_delta_pip
+        import shutil
+
+        print(f"\n[Predictive] Finalizing {len(inference_results)} briefs via Spark Delta Bridge...")
+        
+        # Initialize Spark Session (Match the Gold layer config)
+        builder = SparkSession.builder \
+            .appName("PredictIQ_Brief_Writer") \
+            .config("spark.driver.memory", "2g") \
+            .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension") \
+            .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog") \
+            .config("spark.sql.parquet.enableVectorizedReader", "false")
+        
+        spark = configure_spark_with_delta_pip(builder).getOrCreate()
+        spark.sparkContext.setLogLevel("ERROR")
+
+        try:
+            # 1. Prepare Data
+            df_briefs = spark.createDataFrame(pd.DataFrame(inference_results))
+            
+            # 2. Write Current (The React Dashboard View - Overwrite)
+            # This ensures the dashboard ONLY shows the latest signals
+            if os.path.exists(GOLD_BRIEFS):
+                shutil.rmtree(GOLD_BRIEFS)
+            
+            df_briefs.write.format("delta").mode("overwrite").save(GOLD_BRIEFS)
+            print(f"    > Dashboard View Updated: {GOLD_BRIEFS}")
+
+            # 3. Write History (The Audit Ledger - Append)
+            history_path = GOLD_BRIEFS + "_history"
+            df_briefs.write.format("delta").mode("append").option("mergeSchema", "true").save(history_path)
+            print(f"    > Audit Ledger Appended: {history_path}")
+
+        finally:
+            spark.stop()
 
 if __name__ == "__main__":
     main()

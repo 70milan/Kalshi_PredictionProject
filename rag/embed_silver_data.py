@@ -12,7 +12,7 @@ if platform.system() == "Linux":
 import duckdb
 import chromadb
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from sentence_transformers import SentenceTransformer
 
 # ─────────────────────────────────────────────
@@ -49,9 +49,11 @@ def save_watermark(collection_name, timestamp):
     with open(WATERMARK_FILE, 'w') as f:
         json.dump(marks, f, indent=4)
 
-def sync_collection(con, chroma_client, table_path, collection_name, text_cols, id_col, sentiment_col="sentiment"):
+def sync_collection(con, chroma_client, table_path, collection_name, text_cols, id_col, sentiment_col="sentiment", max_rows=None, lookback_hours=None):
     """
     Incremental sync from Delta table to ChromaDB collection using a persistent watermark.
+    max_rows: hard cap on rows per run (prevents runaway embedding on large tables)
+    lookback_hours: ignore records older than N hours even if watermark is missing
     """
     print(f"\n[Vector Sync] Syncing {collection_name} ...")
     
@@ -86,11 +88,21 @@ def sync_collection(con, chroma_client, table_path, collection_name, text_cols, 
     
     try:
         query = f"SELECT {select_list} FROM delta_scan('{table_path}')"
+        
+        # Build WHERE clause
+        filters = []
         if latest_timestamp:
-            # Incremental Filter
-            query += f" WHERE ingested_at > '{latest_timestamp}'"
+            filters.append(f"ingested_at > '{latest_timestamp}'")
+        if lookback_hours:
+            cutoff = (datetime.now(timezone.utc) - timedelta(hours=lookback_hours)).isoformat()
+            filters.append(f"ingested_at >= '{cutoff}'")
+            print(f"    > Hard lookback cap: last {lookback_hours}h only (cutoff: {cutoff[:19]})")
+        if filters:
+            query += " WHERE " + " AND ".join(filters)
         
         query += " ORDER BY ingested_at ASC"
+        if max_rows:
+            query += f" LIMIT {max_rows}"
         
         print(f"    > Fetching data from Delta (this may take a few minutes for large tables)...")
         df = con.execute(query).df()
@@ -194,7 +206,9 @@ def main():
         "silver_gdelt_enriched", 
         text_cols=["persons_array", "themes_array", "orgs_array"],
         id_col="gkg_record_id",
-        sentiment_col="0.0" # GDELT sentiment is complex, using 0.0 for now
+        sentiment_col="0.0",
+        max_rows=5000,       # Cap per cycle — GDELT is a signal source, not a search corpus
+        lookback_hours=48    # Never embed records older than 48h even on cold start
     )
 
     print("\n[Vector Sync] Bridge Synchronization Complete.")

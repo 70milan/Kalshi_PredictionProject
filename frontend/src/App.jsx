@@ -2,7 +2,10 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import MispricingCard from './components/MispricingCard';
 import './index.css';
 
-const API_BASE = 'http://localhost:8000';
+// Dynamically point to the backend whether accessed via localhost or a Tailscale IP
+const API_BASE = window.location.hostname === 'localhost' 
+  ? 'http://localhost:8000' 
+  : `http://${window.location.hostname}:8000`;
 const POLL_MS  = 15_000;
 
 export default function App() {
