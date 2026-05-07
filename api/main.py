@@ -34,7 +34,7 @@ load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 PROJECT_ROOT     = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BRIEFS_PATH      = os.path.join(PROJECT_ROOT, "data", "gold", "intelligence_briefs")
 SIMULATED_TRADES_PATH = os.path.join(PROJECT_ROOT, "data", "gold", "simulated_trades.csv")
-KALSHI_BASE_URL  = "https://trading-api.kalshi.com/trade-api/v2"
+KALSHI_BASE_URL  = "https://demo-api.kalshi.co/trade-api/v2"
 KALSHI_API_KEY   = os.getenv("KALSHI_API_KEY")
 KALSHI_API_SECRET= os.getenv("KALSHI_API_SECRET", "")
 SAFE_MODE        = os.getenv("SAFE_MODE", "true").lower() == "true"   # Default: ON
@@ -44,7 +44,7 @@ app = FastAPI(title="PredictIQ Intelligence API", version="1.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=["http://localhost:5173", "http://100.86.91.43:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

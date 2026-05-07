@@ -147,7 +147,32 @@ def cascading_rag_search(collections, query_text, current_time, debug=False):
     return [], "Ghost Pump / Echo Chamber Check"
 
 # ---------------------------------------------------------
-# 4. THE BOOKMAKER LLM
+# 4. LLM OUTPUT CLEANUP
+# ---------------------------------------------------------
+def _flatten_llm_field(value):
+    """Converts nested LLM output (dicts/lists) into a clean readable string.
+    Prioritizes 'description', 'reason', 'analysis' keys when present."""
+    if isinstance(value, str):
+        # Check if the string is secretly JSON
+        try:
+            parsed = json.loads(value)
+            return _flatten_llm_field(parsed)
+        except (json.JSONDecodeError, TypeError):
+            return value
+    if isinstance(value, dict):
+        # Priority keys that contain the actual readable content
+        for key in ('description', 'reason', 'analysis', 'explanation', 'text', 'content'):
+            if key in value and isinstance(value[key], str):
+                return value[key]
+        # Fallback: join all string values
+        parts = [str(v) for v in value.values() if v]
+        return ' '.join(parts)
+    if isinstance(value, list):
+        return ' '.join([_flatten_llm_field(item) for item in value])
+    return str(value)
+
+# ---------------------------------------------------------
+# 5. THE BOOKMAKER LLM
 # ---------------------------------------------------------
 def generate_intelligence_brief(market, context_docs, anomaly_type):
     """
@@ -183,14 +208,9 @@ Respond with ONLY a JSON object containing exactly these keys: bull_case, bear_c
             res_data = res_data[0]
             
         if isinstance(res_data, dict):
-            # Force all fields to strings, joining lists if necessary
-            for k, v in res_data.items():
-                if isinstance(v, list):
-                    res_data[k] = " ".join([str(item) for item in v])
-                elif isinstance(v, dict):
-                    res_data[k] = json.dumps(v)
-                else:
-                    res_data[k] = str(v)
+            # Flatten nested LLM outputs into clean readable strings
+            for k in list(res_data.keys()):
+                res_data[k] = _flatten_llm_field(res_data[k])
             return res_data
             
         return {"bull_case": "N/A", "bear_case": "N/A", "verdict": "Invalid JSON format"}

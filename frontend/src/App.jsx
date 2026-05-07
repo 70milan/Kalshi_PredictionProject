@@ -3,19 +3,20 @@ import MispricingCard from './components/MispricingCard';
 import './index.css';
 
 // Dynamically point to the backend whether accessed via localhost or a Tailscale IP
-const API_BASE = window.location.hostname === 'localhost' 
-  ? 'http://localhost:8000' 
+const API_BASE = window.location.hostname === 'localhost'
+  ? 'http://localhost:8000'
   : `http://${window.location.hostname}:8000`;
-const POLL_MS  = 15_000;
+const POLL_MS = 15_000;
 
 export default function App() {
-  const [briefs, setBriefs]       = useState([]);
-  const [safeMode, setSafeMode]   = useState(true);
-  const [bankroll, setBankroll]   = useState(1000);
-  const [loading, setLoading]     = useState(true);
-  const [lastPoll, setLastPoll]   = useState(null);
-  const [toast, setToast]         = useState(null);
-  const [filter, setFilter]       = useState('all');
+  const [briefs, setBriefs] = useState([]);
+  const [safeMode, setSafeMode] = useState(true);
+  const [bankroll, setBankroll] = useState(1000);
+  const [loading, setLoading] = useState(true);
+  const [lastPoll, setLastPoll] = useState(null);
+  const [toast, setToast] = useState(null);
+  const [filter, setFilter] = useState('all');
+  const [selectedBrief, setSelectedBrief] = useState(null);
   const toastTimer = useRef(null);
 
   const showToast = useCallback((msg) => {
@@ -47,11 +48,11 @@ export default function App() {
   }, [fetchIntelligence]);
 
   // Derived stats
-  const withEdge    = briefs.filter(b => b.kelly?.edge_detected);
-  const avgConf     = briefs.length
+  const withEdge = briefs.filter(b => b.kelly?.edge_detected);
+  const avgConf = briefs.length
     ? (briefs.reduce((s, b) => s + (b.confidence_score || 0), 0) / briefs.length * 100).toFixed(0)
     : 0;
-  const totalKelly  = withEdge.reduce((s, b) => s + (b.kelly?.suggested_bet_usd ?? 0), 0);
+  const totalKelly = withEdge.reduce((s, b) => s + (b.kelly?.suggested_bet_usd ?? 0), 0);
 
   const displayBriefs = filter === 'edge' ? withEdge : briefs;
 
@@ -62,7 +63,7 @@ export default function App() {
         <div className="header-brand">
           <div className="header-logo">P</div>
           <div>
-            <div className="header-title">PredictIQ Terminal</div>
+            <div className="header-title">Lorem Ipsum</div>
             <div className="header-subtitle">AI Intelligence · HIL Execution</div>
           </div>
         </div>
@@ -160,11 +161,70 @@ export default function App() {
                 brief={brief}
                 bankroll={bankroll}
                 onTradeResult={showToast}
+                onViewDetails={() => setSelectedBrief(brief)}
               />
             ))}
           </div>
         )}
       </div>
+
+      {/* MODAL OVERLAY */}
+      {selectedBrief && (
+        <div className="modal-overlay" onClick={() => setSelectedBrief(null)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <button className="modal-close" onClick={() => setSelectedBrief(null)}>×</button>
+            
+            <div className="modal-header">
+              <div className="card-ticker">{selectedBrief.ticker}</div>
+              <h2 className="modal-title">{selectedBrief.title}</h2>
+              <div className="modal-meta">
+                <span className={`delta-badge ${selectedBrief.odds_delta >= 0 ? 'delta-up' : 'delta-down'}`}>
+                  {selectedBrief.odds_delta >= 0 ? '+' : ''}{(selectedBrief.odds_delta * 100).toFixed(1)}%
+                </span>
+                <span className="odds-badge">{(selectedBrief.current_odds * 100).toFixed(0)}¢ YES</span>
+              </div>
+            </div>
+
+            <div className="modal-body">
+              <div className="analysis-grid">
+                <div className="analysis-block bull">
+                  <div className="analysis-label">Bull Case</div>
+                  <div className="analysis-text-full">{selectedBrief.bull_case}</div>
+                </div>
+                <div className="analysis-block bear">
+                  <div className="analysis-label">Bear Case</div>
+                  <div className="analysis-text-full">{selectedBrief.bear_case}</div>
+                </div>
+              </div>
+
+              <div className="verdict-block-full">
+                <div className="analysis-label" style={{ color: 'var(--blue)' }}>AI Synthesis & Verdict</div>
+                {selectedBrief.verdict}
+              </div>
+
+              <div className="kelly-section-full">
+                <div className="kelly-info">
+                  <div className="kelly-label">Kelly Criterion Recommendation</div>
+                  <div className="kelly-bet">
+                    {selectedBrief.kelly?.suggested_bet_usd > 0 
+                      ? `$${selectedBrief.kelly.suggested_bet_usd.toFixed(2)}` 
+                      : 'No Positive Edge'}
+                  </div>
+                  <div className="kelly-reasoning-full">
+                    {selectedBrief.kelly?.reasoning || 'Insufficient edge for a mathematical bet.'}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="modal-footer">
+              <div className="ingested-at">
+                Generated at {new Date(selectedBrief.ingested_at).toLocaleString()}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* TOAST */}
       {toast && (

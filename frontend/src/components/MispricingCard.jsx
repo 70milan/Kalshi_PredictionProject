@@ -1,8 +1,11 @@
 import { useState, useCallback } from 'react';
 
-const API_BASE = 'http://localhost:8000';
+const API_BASE = window.location.hostname === 'localhost' 
+  ? 'http://localhost:8000' 
+  : `http://${window.location.hostname}:8000`;
 
-export default function MispricingCard({ brief, bankroll, onTradeResult }) {
+
+export default function MispricingCard({ brief, bankroll, onTradeResult, onViewDetails }) {
   const [executing, setExecuting] = useState(false);
   const { kelly } = brief;
 
@@ -14,7 +17,8 @@ export default function MispricingCard({ brief, bankroll, onTradeResult }) {
   const bet = kelly?.suggested_bet_usd ?? 0;
   const safeMode = brief.safe_mode;
 
-  const handleTrade = useCallback(async () => {
+  const handleTrade = useCallback(async (e) => {
+    e.stopPropagation(); // Prevent modal when clicking trade
     setExecuting(true);
     try {
       const priceInCents = Math.round(brief.current_odds * 100);
@@ -33,11 +37,12 @@ export default function MispricingCard({ brief, bankroll, onTradeResult }) {
 
       const data = await res.json();
       onTradeResult({
-        type: data.status === 'SAFE_MODE_SIMULATED' ? 'warning' : 'success',
-        message: data.status === 'SAFE_MODE_SIMULATED'
+        type: data.status === 'SAFE_MODE_LOGGED' ? 'warning' : 'success',
+        message: data.status === 'SAFE_MODE_LOGGED'
           ? `Safe Mode: ${brief.ticker} logged (${contracts} contracts @ ${priceInCents}¢)`
           : `Trade submitted: ${brief.ticker}`,
       });
+
     } catch (err) {
       onTradeResult({ type: 'error', message: `Failed: ${err.message}` });
     } finally {
@@ -56,7 +61,7 @@ export default function MispricingCard({ brief, bankroll, onTradeResult }) {
   } catch (_) { /* already a plain string */ }
 
   return (
-    <div className="brief-card">
+    <div className="brief-card" onClick={onViewDetails} style={{ cursor: 'pointer' }}>
       {/* HEADER */}
       <div className="card-header">
         <div>

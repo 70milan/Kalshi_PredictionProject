@@ -64,7 +64,29 @@ def get_predictive_candidates(con, min_score=80.0):
         return pd.DataFrame()
 
 # ---------------------------------------------------------
-# 3. RAG SEARCH & LLM SYNTHESIS
+# 3. LLM OUTPUT CLEANUP
+# ---------------------------------------------------------
+def _flatten_llm_field(value):
+    """Converts nested LLM output (dicts/lists) into a clean readable string.
+    Prioritizes 'description', 'reason', 'analysis' keys when present."""
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return _flatten_llm_field(parsed)
+        except (json.JSONDecodeError, TypeError):
+            return value
+    if isinstance(value, dict):
+        for key in ('description', 'reason', 'analysis', 'explanation', 'text', 'content'):
+            if key in value and isinstance(value[key], str):
+                return value[key]
+        parts = [str(v) for v in value.values() if v]
+        return ' '.join(parts)
+    if isinstance(value, list):
+        return ' '.join([_flatten_llm_field(item) for item in value])
+    return str(value)
+
+# ---------------------------------------------------------
+# 4. RAG SEARCH & LLM SYNTHESIS
 # ---------------------------------------------------------
 def fetch_rag_context(collections, query_text, current_time, window_mins=120):
     """Search Chroma for relevant news within a 2-hour window."""
@@ -138,7 +160,12 @@ Respond ONLY with a JSON object containing: bull_case, bear_case, verdict."""
             response_format={"type": "json_object"},
             temperature=0.3
         )
-        return json.loads(response.choices[0].message.content)
+        res_data = json.loads(response.choices[0].message.content)
+        # Flatten nested LLM outputs into clean readable strings
+        if isinstance(res_data, dict):
+            for k in list(res_data.keys()):
+                res_data[k] = _flatten_llm_field(res_data[k])
+        return res_data
     except Exception as e:
         return {"bull_case": "Error", "bear_case": "Error", "verdict": str(e)}
 
@@ -192,10 +219,9 @@ def main():
         print(f"    > Synthesizing {len(context_docs)} signals for predictive edge...")
         brief = generate_predictive_brief(market, context_docs)
         
-        # Ensure all LLM outputs are flat strings to prevent PySpark MapType vs StringType schema crashes
+        # Ensure all LLM outputs are flat strings to prevent PySpark schema crashes
         for k in list(brief.keys()):
-            if not isinstance(brief[k], str):
-                brief[k] = json.dumps(brief[k]) if isinstance(brief[k], (dict, list)) else str(brief[k])
+            brief[k] = _flatten_llm_field(brief[k])
         
         confidence = max([d['score'] for d in context_docs])
         brief.update({

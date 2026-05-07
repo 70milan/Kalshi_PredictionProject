@@ -9,15 +9,15 @@ Open your terminal in VS Code (or your preferred terminal) and start the backend
 ### Terminal 1: Start the Backend (FastAPI)
 Run this from the root `predection_project` folder:
 ```bash
-uvicorn api.main:app --host 0.0.0.0 --port 8000
+uvicorn api.main:app --host 100.86.91.43 --port 8000
 ```
-*(The `--host 0.0.0.0` part is the magic that allows your phone to connect over Tailscale.)*
+*(Binding to your Tailscale IP ensures the backend ignores regular home Wi-Fi traffic and only accepts encrypted Tailscale requests.)*
 
 ### Terminal 2: Start the Frontend (React/Vite)
 Open a second terminal tab, navigate into the frontend folder, and start it:
 ```bash
 cd frontend
-npm run dev -- --host 0.0.0.0
+npm run dev -- --host 100.86.91.43
 ```
 
 ---
