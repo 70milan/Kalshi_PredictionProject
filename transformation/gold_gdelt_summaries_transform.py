@@ -68,9 +68,16 @@ def generate_gdelt_summaries(spark, gkg_path, events_path):
     )
 
     # 4. Spike Detection Signal (90 days baseline: 90*24*4 = 8640)
+    # Require at least 10 baseline mentions before trusting the spike signal.
+    # Cold-start: systems with only days of data have vol_90d ~1-5, producing 8640x+ spikes.
+    # Cap at 10x so a single noisy mention can't inflate the mispricing score.
+    MIN_BASELINE = 10
     df_gold = df_latest.withColumn(
-        "vol_spike_multiplier", 
-        F.col("vol_15m") / F.when(F.col("vol_90d") > 0, F.col("vol_90d") / 8640.0).otherwise(1.0)
+        "vol_spike_multiplier",
+        F.when(
+            F.col("vol_90d") >= MIN_BASELINE,
+            F.least(F.lit(10.0), F.col("vol_15m") / (F.col("vol_90d") / 8640.0))
+        ).otherwise(F.lit(0.0))
     ).withColumn("ingested_at", F.current_timestamp())
 
     return df_gold

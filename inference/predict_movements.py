@@ -14,9 +14,9 @@ import chromadb
 from groq import Groq
 import json
 import pandas as pd
-import argparse
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
+import time
 
 # ---------------------------------------------------------
 # 1. SETUP & CONFIGURATION
@@ -24,39 +24,34 @@ from dotenv import load_dotenv
 load_dotenv()
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# Paths to the Gold Lakehouse
 GOLD_MISPRICING = os.path.join(PROJECT_ROOT, "data", "gold", "mispricing_scores")
 GOLD_BRIEFS     = os.path.join(PROJECT_ROOT, "data", "gold", "intelligence_briefs")
 CHROMA_PATH     = os.path.join(PROJECT_ROOT, "data", "chroma")
 
-# Similarity Tuning
 SIMILARITY_FLOOR = 0.35
 
-# Configure Groq
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
-GROQ_MODEL = "llama-3.1-8b-instant"
+groq_client  = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+GROQ_MODEL   = "llama-3.1-8b-instant"
 
 # ---------------------------------------------------------
-# 2. CANDIDATE SELECTION (PREDICTIVE LOGIC)
+# 2. CANDIDATE SELECTION
 # ---------------------------------------------------------
 def get_predictive_candidates(con, min_score=80.0):
-    """
-    Selects markets flagged by the Gold Layer as having a 
-    News Spike > Price Move gap (The 'Delayed Reaction' signal).
-    """
     print(f"[Predictive] Scanning Gold Mispricing Ledger for scores >= {min_score}...")
     query = f"""
-    SELECT ticker, title, yes_bid as current_odds, delta_15m, mispricing_score, max_spike_multiplier, sentiment_signal, ingested_at
+    SELECT ticker, title, yes_bid as current_odds, delta_15m, mispricing_score,
+           max_spike_multiplier, sentiment_signal, ingested_at
     FROM delta_scan('{GOLD_MISPRICING}')
-    WHERE flagged_candidate = true AND mispricing_score >= {min_score}
+    WHERE flagged_candidate = true
+      AND mispricing_score >= {min_score}
+      AND ingested_at >= CURRENT_TIMESTAMP - INTERVAL '48 hours'
     ORDER BY mispricing_score DESC, delta_15m ASC
-    LIMIT 20;
+    LIMIT 3;
     """
     try:
         df = con.execute(query).df()
         if not df.empty:
-            # Add a mock 'previous_odds' for the LLM prompt consistency
             df['previous_odds'] = df['current_odds'] / (1 + df['delta_15m'])
         return df
     except Exception as e:
@@ -67,33 +62,36 @@ def get_predictive_candidates(con, min_score=80.0):
 # 3. LLM OUTPUT CLEANUP
 # ---------------------------------------------------------
 def _flatten_llm_field(value):
-    """Converts nested LLM output (dicts/lists) into a clean readable string.
-    Prioritizes 'description', 'reason', 'analysis' keys when present."""
     if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-            return _flatten_llm_field(parsed)
-        except (json.JSONDecodeError, TypeError):
-            return value
+        if value.strip().startswith('{') or value.strip().startswith('['):
+            try:
+                return _flatten_llm_field(json.loads(value))
+            except:
+                pass
+        return value
     if isinstance(value, dict):
-        for key in ('description', 'reason', 'analysis', 'explanation', 'text', 'content'):
-            if key in value and isinstance(value[key], str):
-                return value[key]
-        parts = [str(v) for v in value.values() if v]
-        return ' '.join(parts)
+        for key in ('description', 'reason', 'analysis', 'explanation', 'text', 'content', 'evidence', 'verdict'):
+            if key in value:
+                return _flatten_llm_field(value[key])
+        parts = []
+        for k, v in value.items():
+            if k in ('direction', 'strength', 'sentiment'):
+                parts.append(f"[{str(v).upper()}]")
+            else:
+                parts.append(_flatten_llm_field(v))
+        return ' '.join([p for p in parts if p])
     if isinstance(value, list):
         return ' '.join([_flatten_llm_field(item) for item in value])
     return str(value)
 
 # ---------------------------------------------------------
-# 4. RAG SEARCH & LLM SYNTHESIS
+# 4. RAG SEARCH
 # ---------------------------------------------------------
-def fetch_rag_context(collections, query_text, current_time, window_mins=120):
-    """Search Chroma for relevant news within a 2-hour window."""
-    start_ts = int((current_time - timedelta(minutes=window_mins)).timestamp())
-    end_ts   = int(current_time.timestamp())
+def fetch_rag_context(collections, query_text, current_time, window_mins=1440):
+    start_ts    = int((current_time - timedelta(minutes=window_mins)).timestamp())
+    end_ts      = int(current_time.timestamp())
     scored_docs = []
-    
+
     if not isinstance(collections, list):
         collections = [collections]
 
@@ -109,49 +107,53 @@ def fetch_rag_context(collections, query_text, current_time, window_mins=120):
             },
             include=["documents", "metadatas", "distances"]
         )
-        
         if results['documents'] and results['documents'][0]:
             for i in range(len(results['documents'][0])):
                 distance = results['distances'][0][i]
-                score = 1.0 / (1.0 + distance)
+                score    = 1.0 / (1.0 + distance)
                 if score >= SIMILARITY_FLOOR:
                     scored_docs.append({
                         "content": results['documents'][0][i],
-                        "source": results['metadatas'][0][i].get('source', coll.name),
-                        "score": score
+                        "source":  results['metadatas'][0][i].get('source', coll.name),
+                        "score":   score
                     })
-    
+
     return sorted(scored_docs, key=lambda x: x['score'], reverse=True)
 
+# ---------------------------------------------------------
+# 5. LLM SYNTHESIS
+# ---------------------------------------------------------
 def generate_predictive_brief(market, context_docs):
-    """Synthesizes the 'Delayed Reaction' verdict via Groq."""
+    """Returns a dict with bull_case/bear_case/verdict, or None on 429."""
     if not groq_client:
         return {"bull_case": "N/A", "bear_case": "N/A", "verdict": "GROQ_API_KEY missing."}
 
-    rag_text = "\n\n".join([f"Source: {d['source']}\n{d['content'][:800]}" for d in context_docs])
-    
-    # Map raw sentiment score to a human-readable label
-    sent = market['sentiment_signal']
+    rag_text   = "\n\n".join([f"Source: {d['source']}\n{d['content'][:800]}" for d in context_docs])
+    sent       = market['sentiment_signal']
     sent_label = "Strongly Positive" if sent > 0.5 else ("Strongly Negative" if sent < -0.5 else "Neutral/Mixed")
 
-    prompt = f"""Analyze this PREDICTIVE opportunity for a 'Delayed Reaction' (Under-reaction). 
-The news volume and sentiment signal are significantly stronger than the market's price movement.
+    prompt = f"""Analyze this PREDICTIVE opportunity for a 'Delayed Reaction' (Under-reaction).
 
 MARKET: {market['ticker']} | {market['title']}
 CURRENT ODDS: {market['current_odds']*100:.1f}%
-NEWS SPIKE: {market['max_spike_multiplier']}x baseline volume
+NEWS SPIKE: {market['max_spike_multiplier']:.1f}x baseline volume
 SENTIMENT INTENSITY: {sent:.2f} ({sent_label})
-MISPRICING SCORE: {market['mispricing_score']}/100
 
 EVIDENCE FOUND IN NEWS:
 {rag_text}
 
 TASK:
-1. Identify if the news sentiment directionally supports the 'YES' or 'NO' outcome for this specific market.
-2. Determine if the market is 'Under-reacting' (i.e., the price should have moved MORE than {market['delta_15m']*100:.1f}% based on this news).
-3. Provide a Bull Case, Bear Case, and a final Verdict (Buy YES, Buy NO, or No Trade).
+1. BULL CASE: Fundamental reasons why the 'YES' outcome might be more likely than the current {market['current_odds']*100:.0f}% odds.
+2. BEAR CASE: Fundamental reasons why the 'NO' outcome might be more likely than the market implies.
+3. VERDICT: If confidence in YES >> current odds, recommend 'Buy YES'. If << odds, 'Buy NO'. Otherwise 'No Trade'.
 
-Respond ONLY with a JSON object containing: bull_case, bear_case, verdict."""
+RULES:
+- Do NOT repeat volume numbers. Explain the news fundamentals.
+- STRICT RULE: Never recommend 'Buy YES' on a speculative basis just because the odds are low. If there is NO CONCRETE EVIDENCE in the text supporting the outcome, you MUST recommend 'Buy NO' or 'No Trade'. Do not act as a pundit.
+- Be highly critical. If news is vague, recommend 'No Trade'.
+- Respond ONLY with a JSON object: bull_case, bear_case, verdict, recommended_side, confidence_pct.
+- recommended_side must be exactly "yes" or "no" (lowercase).
+- confidence_pct must be an integer 0-100."""
 
     try:
         response = groq_client.chat.completions.create(
@@ -161,17 +163,30 @@ Respond ONLY with a JSON object containing: bull_case, bear_case, verdict."""
             temperature=0.3
         )
         res_data = json.loads(response.choices[0].message.content)
-        # Flatten nested LLM outputs into clean readable strings
+        if isinstance(res_data, list) and len(res_data) > 0:
+            res_data = res_data[0]
+
         if isinstance(res_data, dict):
             for k in list(res_data.keys()):
-                res_data[k] = _flatten_llm_field(res_data[k])
+                if k not in ("recommended_side", "confidence_pct"):
+                    res_data[k] = _flatten_llm_field(res_data[k])
+            
+            # Ensure valid side
+            side = str(res_data.get("recommended_side", "")).strip().lower()
+            if side not in ("yes", "no"):
+                verdict_lower = str(res_data.get("verdict", "")).lower()
+                side = "yes" if "buy yes" in verdict_lower else "no" if "buy no" in verdict_lower else "yes"
+            res_data["recommended_side"] = side
+            
         return res_data
     except Exception as e:
+        if "429" in str(e):
+            print(f"    [Rate Limit] Groq 429 — skipping this market, next cycle will retry.")
+            return None
         return {"bull_case": "Error", "bear_case": "Error", "verdict": str(e)}
 
-
 # ---------------------------------------------------------
-# 4. MAIN
+# 6. MAIN
 # ---------------------------------------------------------
 def main():
     print("=" * 60)
@@ -183,7 +198,7 @@ def main():
 
     candidates = get_predictive_candidates(con)
     if candidates.empty:
-        print("[Predictive] No 'Delayed Reaction' opportunities found. Market is efficiently priced.")
+        print("[Predictive] No candidates found. Market is efficiently priced.")
         return
 
     chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
@@ -196,85 +211,55 @@ def main():
         print(f"[Predictive] ERROR: Chroma collections not ready: {e}")
         return
 
-    inference_results = []
+    os.makedirs(GOLD_BRIEFS, exist_ok=True)
     current_time = datetime.now(timezone.utc)
+    written      = 0
 
     for _, market in candidates.iterrows():
-        # Use the record's own timestamp as the anchor for context retrieval.
-        # This prevents skipping valid signals during historical scans.
         market_time = pd.to_datetime(market['ingested_at'])
         if market_time.tzinfo is None:
             market_time = market_time.replace(tzinfo=timezone.utc)
 
-        print(f"\n[Predictive] ANALYZING UNDER-REACTION: {market['ticker']} (Score: {market['mispricing_score']:.1f})")
-        print(f"    > Event Time: {market_time.strftime('%Y-%m-%d %H:%M:%S UTC')}")
-        
-        query_text = f"{market['title']}"
-        context_docs = fetch_rag_context(active_collections, query_text, market_time, window_mins=1440)
+        print(f"\n[Predictive] ANALYZING: {market['ticker']} (Score: {market['mispricing_score']:.1f})")
 
+        context_docs = fetch_rag_context(active_collections, str(market['title']), market_time)
         if not context_docs:
-            print(f"    > Ticker has news volume spike but RAG found no specific text matches. Skipping.")
+            print(f"    > No RAG matches found. Skipping.")
             continue
 
-        print(f"    > Synthesizing {len(context_docs)} signals for predictive edge...")
+        print(f"    > Synthesizing {len(context_docs)} signals...")
         brief = generate_predictive_brief(market, context_docs)
-        
-        # Ensure all LLM outputs are flat strings to prevent PySpark schema crashes
-        for k in list(brief.keys()):
-            brief[k] = _flatten_llm_field(brief[k])
-        
+
+        if brief is None:
+            continue  # 429 — skip, next cycle retries
+
         confidence = max([d['score'] for d in context_docs])
-        brief.update({
-            "ticker": market['ticker'],
-            "title": market['title'],
-            "current_odds": market['current_odds'],
-            "odds_delta": market['delta_15m'],
-            "confidence_score": confidence,
-            "event_at": current_time.isoformat(),
-            "ingested_at": current_time.isoformat()
-        })
-        inference_results.append(brief)
-        print(f"--- PREDICTIVE VERDICT [{market['ticker']}] ---")
-        print(f"VERDICT: {brief['verdict']}")
+        row = {
+            "ticker":           market['ticker'],
+            "title":            market['title'],
+            "bull_case":        _flatten_llm_field(brief.get("bull_case", "")),
+            "bear_case":        _flatten_llm_field(brief.get("bear_case", "")),
+            "verdict":          _flatten_llm_field(brief.get("verdict", "")),
+            "recommended_side": brief.get("recommended_side", "yes"),
+            "current_odds":     float(market['current_odds']),
+            "odds_delta":       float(market['delta_15m']),
+            "mispricing_score": float(market['mispricing_score']),
+            "confidence_score": float(confidence),
+            "event_at":         current_time.isoformat(),
+            "ingested_at":      current_time.isoformat(),
+        }
 
-    if inference_results:
-        # --- NEW: Delta Table Storage for Dashboard & History ---
-        from pyspark.sql import SparkSession
-        from delta import configure_spark_with_delta_pip
-        import shutil
+        print(f"--- VERDICT [{market['ticker']}]: {row['verdict']}")
 
-        print(f"\n[Predictive] Finalizing {len(inference_results)} briefs via Spark Delta Bridge...")
-        
-        # Initialize Spark Session (Match the Gold layer config)
-        builder = SparkSession.builder \
-            .appName("PredictIQ_Brief_Writer") \
-            .config("spark.driver.memory", "2g") \
-            .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension") \
-            .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog") \
-            .config("spark.sql.parquet.enableVectorizedReader", "false")
-        
-        spark = configure_spark_with_delta_pip(builder).getOrCreate()
-        spark.sparkContext.setLogLevel("ERROR")
+        # Append as a timestamped Parquet file — no Spark, no JVM
+        ts_str   = current_time.strftime("%Y%m%d_%H%M%S")
+        out_path = os.path.join(GOLD_BRIEFS, f"brief_{ts_str}_{market['ticker']}.parquet")
+        pd.DataFrame([row]).to_parquet(out_path, index=False)
+        written += 1
 
-        try:
-            # 1. Prepare Data
-            df_briefs = spark.createDataFrame(pd.DataFrame(inference_results))
-            
-            # 2. Write Current (The React Dashboard View - Overwrite)
-            # This ensures the dashboard ONLY shows the latest signals
-            if os.path.exists(GOLD_BRIEFS):
-                shutil.rmtree(GOLD_BRIEFS)
-            
-            df_briefs.write.format("delta").mode("overwrite").save(GOLD_BRIEFS)
-            print(f"    > Dashboard View Updated: {GOLD_BRIEFS}")
+        time.sleep(30)  # respect Groq TPM limits between calls
 
-            # 3. Write History (The Audit Ledger - Append)
-            history_path = GOLD_BRIEFS + "_history"
-            df_briefs.write.format("delta").mode("append").option("mergeSchema", "true").save(history_path)
-            print(f"    > Audit Ledger Appended: {history_path}")
-
-        finally:
-            spark.stop()
+    print(f"\n[Predictive] Done. {written} brief(s) written to {GOLD_BRIEFS}")
 
 if __name__ == "__main__":
     main()

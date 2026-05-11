@@ -53,9 +53,16 @@ def generate_news_summaries(spark, silver_news_path):
     )
 
     # 5. Spike Detection Signal (90 days baseline: 90*24*4 = 8640)
+    # Require at least 100 baseline articles before trusting the spike signal (news sources
+    # publish many articles; fewer than 100 over 90 days means the source is too sparse).
+    # Cap at 10x to prevent cold-start inflation.
+    MIN_BASELINE = 100
     df_gold = df_latest.withColumn(
-        "vol_spike_multiplier", 
-        F.col("vol_15m") / F.when(F.col("vol_90d") > 0, F.col("vol_90d") / 8640.0).otherwise(1.0)
+        "vol_spike_multiplier",
+        F.when(
+            F.col("vol_90d") >= MIN_BASELINE,
+            F.least(F.lit(10.0), F.col("vol_15m") / (F.col("vol_90d") / 8640.0))
+        ).otherwise(F.lit(0.0))
     ).withColumn("ingested_at", F.current_timestamp())
 
     return df_gold

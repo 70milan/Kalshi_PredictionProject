@@ -151,22 +151,24 @@ def cascading_rag_search(collections, query_text, current_time, debug=False):
 # ---------------------------------------------------------
 def _flatten_llm_field(value):
     """Converts nested LLM output (dicts/lists) into a clean readable string.
-    Prioritizes 'description', 'reason', 'analysis' keys when present."""
+    Aggressively extracts readable content from deep nested structures."""
     if isinstance(value, str):
-        # Check if the string is secretly JSON
-        try:
-            parsed = json.loads(value)
-            return _flatten_llm_field(parsed)
-        except (json.JSONDecodeError, TypeError):
-            return value
+        if value.strip().startswith('{') or value.strip().startswith('['):
+            try:
+                return _flatten_llm_field(json.loads(value))
+            except: pass
+        return value
     if isinstance(value, dict):
-        # Priority keys that contain the actual readable content
-        for key in ('description', 'reason', 'analysis', 'explanation', 'text', 'content'):
-            if key in value and isinstance(value[key], str):
-                return value[key]
-        # Fallback: join all string values
-        parts = [str(v) for v in value.values() if v]
-        return ' '.join(parts)
+        for key in ('description', 'reason', 'analysis', 'explanation', 'text', 'content', 'evidence', 'verdict'):
+            if key in value:
+                return _flatten_llm_field(value[key])
+        parts = []
+        for k, v in value.items():
+            if k in ('direction', 'strength', 'sentiment'):
+                parts.append(f"[{str(v).upper()}]")
+            else:
+                parts.append(_flatten_llm_field(v))
+        return ' '.join([p for p in parts if p])
     if isinstance(value, list):
         return ' '.join([_flatten_llm_field(item) for item in value])
     return str(value)
@@ -188,12 +190,27 @@ def generate_intelligence_brief(market, context_docs, anomaly_type):
     prompt = f"""Analyze this prediction market anomaly.
 MARKET: {market['ticker']} | {market['title']}
 RULES: {market['rules_primary']}
+CURRENT ODDS: {market['current_odds']*100:.1f}% (Market implies a {market['current_odds']*100:.0f}% probability)
 ODDS MOVE: {market['previous_odds']*100:.1f}% -> {market['current_odds']*100:.1f}% ({anomaly_type})
 
 EVIDENCE:
 {rag_text}
 
-Respond with ONLY a JSON object containing exactly these keys: bull_case, bear_case, verdict."""
+TASK:
+1. BULL CASE: Fundamental reasons why the 'YES' outcome might be more likely than the current {market['current_odds']*100:.0f}% odds.
+2. BEAR CASE: Fundamental reasons why the 'NO' outcome might be more likely than the market implies.
+3. VERDICT: Compare your intuitive confidence (0-100%) against the CURRENT ODDS.
+   - If your confidence in 'YES' is HIGHER than the current {market['current_odds']*100:.0f}%, recommend 'Buy YES'.
+   - If your confidence in 'YES' is LOWER than the current {market['current_odds']*100:.0f}%, recommend 'Buy NO'.
+   - If fairly priced, recommend 'No Trade'.
+
+RULES:
+- DO NOT repeat technical scores or volume numbers in the Bull/Bear case. Focus on the news event.
+- STRICT RULE: Never recommend 'Buy YES' on a speculative basis just because the odds are low. If there is NO CONCRETE EVIDENCE in the text supporting the outcome, you MUST recommend 'Buy NO' or 'No Trade'. Do not act as a pundit.
+- Respond ONLY with a JSON object containing exactly these keys:
+  bull_case, bear_case, verdict, recommended_side, confidence_pct
+- recommended_side must be exactly the string "yes" or "no" (lowercase).
+- confidence_pct must be an integer 0-100 representing your confidence in the recommended_side."""
     try:
         response = groq_client.chat.completions.create(
             model=GROQ_MODEL,
@@ -208,12 +225,19 @@ Respond with ONLY a JSON object containing exactly these keys: bull_case, bear_c
             res_data = res_data[0]
             
         if isinstance(res_data, dict):
-            # Flatten nested LLM outputs into clean readable strings
+            # Flatten nested LLM outputs — skip structured fields that must stay typed
             for k in list(res_data.keys()):
-                res_data[k] = _flatten_llm_field(res_data[k])
+                if k not in ("recommended_side", "confidence_pct"):
+                    res_data[k] = _flatten_llm_field(res_data[k])
+            # Safety fallback: ensure recommended_side is always a valid value
+            side = str(res_data.get("recommended_side", "")).strip().lower()
+            if side not in ("yes", "no"):
+                verdict_lower = str(res_data.get("verdict", "")).lower()
+                side = "yes" if "buy yes" in verdict_lower else "no" if "buy no" in verdict_lower else "yes"
+            res_data["recommended_side"] = side
             return res_data
-            
-        return {"bull_case": "N/A", "bear_case": "N/A", "verdict": "Invalid JSON format"}
+
+        return {"bull_case": "N/A", "bear_case": "N/A", "verdict": "Invalid JSON format", "recommended_side": "yes"}
     except Exception as e:
         return {"bull_case": "Error", "bear_case": "Error", "verdict": str(e)}
 
@@ -286,16 +310,18 @@ def main():
             # GHOST PUMP PATH: No corroborating evidence found
             print(f"    > No quality news found above {SIMILARITY_FLOOR*100:.0f}% floor. Recording GHOST PUMP.")
             inference_results.append({
-                "ticker": market['ticker'],
-                "title": market['title'],
-                "current_odds": market['current_odds'],
-                "odds_delta": market['odds_delta'],
-                "bull_case": "N/A - No Corroborating News Found",
-                "bear_case": "N/A - No Corroborating News Found",
-                "verdict": f"GHOST PUMP: Price moved {market['odds_delta']*100:.1f}%, but no fundamental news appeared in the {window_type} window above {SIMILARITY_FLOOR*100:.0f}% similarity. This is likely a retail-driven behavioral distortion.",
+                "ticker":           market['ticker'],
+                "title":            market['title'],
+                "current_odds":     market['current_odds'],
+                "odds_delta":       market['odds_delta'],
+                "mispricing_score": 0.0,
+                "recommended_side": "yes",
+                "bull_case":        "N/A - No Corroborating News Found",
+                "bear_case":        "N/A - No Corroborating News Found",
+                "verdict":          f"GHOST PUMP: Price moved {market['odds_delta']*100:.1f}%, but no fundamental news appeared in the {window_type} window above {SIMILARITY_FLOOR*100:.0f}% similarity. This is likely a retail-driven behavioral distortion.",
                 "confidence_score": 0.0,
-                "event_at": market['ingested_at'],
-                "ingested_at": current_time.isoformat()
+                "event_at":         market['ingested_at'],
+                "ingested_at":      current_time.isoformat()
             })
             continue
 
@@ -304,13 +330,14 @@ def main():
         brief = generate_intelligence_brief(market, context_docs, window_type)
         confidence = max([d['score'] for d in context_docs])
         brief.update({
-            "ticker": market['ticker'],
-            "title": market['title'],
-            "current_odds": market['current_odds'],
-            "odds_delta": market['odds_delta'],
+            "ticker":           market['ticker'],
+            "title":            market['title'],
+            "current_odds":     market['current_odds'],
+            "odds_delta":       market['odds_delta'],
+            "mispricing_score": abs(float(market['odds_delta'])),
             "confidence_score": confidence,
-            "event_at": market['ingested_at'],
-            "ingested_at": current_time.isoformat()
+            "event_at":         market['ingested_at'],
+            "ingested_at":      current_time.isoformat()
         })
         inference_results.append(brief)
         

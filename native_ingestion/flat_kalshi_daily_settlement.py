@@ -59,7 +59,14 @@ def build_headers(method: str, path: str) -> dict:
     timestamp   = str(int(time.time() * 1000))
     message     = timestamp + method + path
     private_key = serialization.load_pem_private_key(API_SECRET.encode(), password=None)
-    signature   = private_key.sign(message.encode(), padding.PKCS1v15(), hashes.SHA256())
+    signature   = private_key.sign(
+        message.encode(),
+        padding.PSS(
+            mgf=padding.MGF1(hashes.SHA256()),
+            salt_length=padding.PSS.DIGEST_LENGTH
+        ),
+        hashes.SHA256()
+    )
 
     return {
         "KALSHI-ACCESS-KEY":       API_KEY,

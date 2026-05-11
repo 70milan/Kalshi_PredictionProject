@@ -2,6 +2,7 @@
 
 # Secrets & Config
 .env
+.env_test
 *.pem
 *.key
 kalshi_api.txt
@@ -51,6 +52,7 @@ venv/
 .venv/
 env/
 .env/
+.env_test/
 build/
 dist/
 *.egg-info/
@@ -71,3 +73,5 @@ git_status_output.txt
 
 cache_delta_jars.py
 cache_*
+
+

@@ -74,16 +74,19 @@ def setup_dummy_mapping_if_missing():
 def generate_mispricing_scores(spark, kalshi_history_path, gdelt_summaries_path, news_summaries_path, mapping_file):
     # 1. Load Kalshi Current State with Velocity Deltas
     # Use a 48-hour sliding window — enough for velocity math, prevents full-history scan
-    lookback_cutoff = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
+    lookback_cutoff_dt  = datetime.now(timezone.utc) - timedelta(hours=48)
+    lookback_cutoff_str = lookback_cutoff_dt.strftime("%Y-%m-%d %H:%M:%S")
     df_k = spark.read.format("delta").load(kalshi_history_path)
     if "ticker" not in df_k.columns or "ingested_at" not in df_k.columns:
         return None
+    # Cast to timestamp for proper comparison — string comparison fails because PySpark
+    # formats timestamps as "YYYY-MM-DD HH:MM:SS" (space) while Python isoformat uses "T"
     df_k = df_k.filter(
         F.col("ticker").isNotNull() &
         F.col("ingested_at").isNotNull() &
-        (F.col("ingested_at").cast("string") >= lookback_cutoff)
+        (F.col("ingested_at").cast("timestamp") >= F.to_timestamp(F.lit(lookback_cutoff_str)))
     )
-    print(f"[Gold Synthesizer] 48h window filter applied. Cutoff: {lookback_cutoff}")
+    print(f"[Gold Synthesizer] 48h window filter applied. Cutoff: {lookback_cutoff_str}")
 
     # Ensure series_ticker exists (fallback to prefix if missing)
     if "series_ticker" not in df_k.columns:
@@ -167,10 +170,13 @@ def generate_mispricing_scores(spark, kalshi_history_path, gdelt_summaries_path,
     # Formula: (VolSpike * abs(Sentiment) * 20) * (1 - abs(PriceDelta))
     # This rewards high news signal + strong sentiment but DECAYS if the price already moved.
     
+    # Score = spike(0-10) × |sentiment|(0-1) × 20 × (1 - |delta|)
+    # Max raw = 10 × 1.0 × 20 = 200, capped at 100.
+    # Threshold of 80 requires spike ≥ 8x + sentiment ≥ 0.5, or spike ≥ 4x + sentiment ≥ 1.0.
     smart_score = (
         F.when(F.col("max_spike_multiplier").isNull(), F.lit(0.0))
          .otherwise(
-             (F.col("max_spike_multiplier") * F.abs(F.col("avg_sentiment")) * 20.0) * 
+             (F.col("max_spike_multiplier") * F.abs(F.col("avg_sentiment")) * 20.0) *
              (F.lit(1.0) - F.abs(F.col("delta_15m")))
          )
     )

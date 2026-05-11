@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Cmd",
+      "Python",
+      "Read",
+      "Write",
+      "Bash(curl:*)",
+      "Bash(cd:*)"
+    ]
+  },
+  "autoApprove": true
+}

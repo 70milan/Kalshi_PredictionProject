@@ -14,9 +14,10 @@ export default function App() {
   const [bankroll, setBankroll] = useState(1000);
   const [loading, setLoading] = useState(true);
   const [lastPoll, setLastPoll] = useState(null);
+  const [activeMarketsAsOf, setActiveMarketsAsOf] = useState(null);
+  const [activeMarketFilter, setActiveMarketFilter] = useState(false);
   const [toast, setToast] = useState(null);
   const [filter, setFilter] = useState('all');
-  const [selectedBrief, setSelectedBrief] = useState(null);
   const toastTimer = useRef(null);
 
   const showToast = useCallback((msg) => {
@@ -34,6 +35,8 @@ export default function App() {
       setSafeMode(data.safe_mode ?? true);
       setBankroll(data.bankroll ?? 1000);
       setLastPoll(new Date());
+      setActiveMarketsAsOf(data.active_markets_as_of ? new Date(data.active_markets_as_of) : null);
+      setActiveMarketFilter(data.active_market_filter ?? false);
     } catch (err) {
       console.error('Poll error:', err);
     } finally {
@@ -56,6 +59,12 @@ export default function App() {
 
   const displayBriefs = filter === 'edge' ? withEdge : briefs;
 
+  // How many minutes ago was latest.parquet written?
+  const bronzeAgeMinutes = activeMarketsAsOf
+    ? Math.floor((Date.now() - activeMarketsAsOf.getTime()) / 60_000)
+    : null;
+  const bronzeStale = bronzeAgeMinutes !== null && bronzeAgeMinutes > 20;
+
   return (
     <>
       {/* HEADER */}
@@ -63,15 +72,29 @@ export default function App() {
         <div className="header-brand">
           <div className="header-logo">P</div>
           <div>
-            <div className="header-title">Lorem Ipsum</div>
-            <div className="header-subtitle">AI Intelligence · HIL Execution</div>
+            <div className="header-title">PredictIQ</div>
+            <div className="header-subtitle">Predictive Market Movements</div>
           </div>
         </div>
 
         <div className="header-meta">
           {lastPoll && (
             <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
-              Updated {lastPoll.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+              Polled {lastPoll.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+            </span>
+          )}
+          {bronzeAgeMinutes !== null && (
+            <span
+              title={`Active market list last refreshed: ${activeMarketsAsOf?.toLocaleTimeString()}`}
+              style={{
+                fontSize: '0.7rem',
+                fontFamily: 'monospace',
+                color: bronzeStale ? 'var(--amber)' : 'var(--green)',
+                display: 'flex', alignItems: 'center', gap: '4px',
+              }}
+            >
+              <span style={{ fontSize: '0.6rem' }}>{bronzeStale ? '⚠' : '✓'}</span>
+              Markets {bronzeAgeMinutes}m ago
             </span>
           )}
           <div className={`status-pill ${safeMode ? 'safe' : 'live'}`}>
@@ -100,6 +123,12 @@ export default function App() {
           <div className="stat-card">
             <div className="stat-label">Total Kelly Exposure</div>
             <div className="stat-value red">${totalKelly.toFixed(0)}</div>
+          </div>
+          <div className="stat-card" title={activeMarketFilter ? `Filtered against latest.parquet (${bronzeAgeMinutes}m ago)` : 'latest.parquet not found — no active-market filter applied'}>
+            <div className="stat-label">Market Filter</div>
+            <div className={`stat-value ${!activeMarketFilter ? 'red' : bronzeStale ? 'amber' : 'green'}`}>
+              {!activeMarketFilter ? 'OFF' : bronzeStale ? `${bronzeAgeMinutes}m` : `${bronzeAgeMinutes}m ✓`}
+            </div>
           </div>
         </div>
 
@@ -132,7 +161,7 @@ export default function App() {
 
         {/* SECTION */}
         <div className="section-heading">
-          Intelligence Briefs · Awaiting Approval
+          Predictive Movement Signals · Awaiting Approval
         </div>
 
         {/* CONTENT */}
@@ -145,7 +174,7 @@ export default function App() {
           <div className="empty-state">
             <div className="empty-icon">⚡</div>
             <div className="empty-title">
-              {filter === 'edge' ? 'No Edge Signals Right Now' : 'No Intelligence Briefs Yet'}
+              {filter === 'edge' ? 'No Edge Signals Right Now' : 'No Movement Signals Yet'}
             </div>
             <div className="empty-subtitle">
               {filter === 'edge'
@@ -161,70 +190,11 @@ export default function App() {
                 brief={brief}
                 bankroll={bankroll}
                 onTradeResult={showToast}
-                onViewDetails={() => setSelectedBrief(brief)}
               />
             ))}
           </div>
         )}
       </div>
-
-      {/* MODAL OVERLAY */}
-      {selectedBrief && (
-        <div className="modal-overlay" onClick={() => setSelectedBrief(null)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <button className="modal-close" onClick={() => setSelectedBrief(null)}>×</button>
-            
-            <div className="modal-header">
-              <div className="card-ticker">{selectedBrief.ticker}</div>
-              <h2 className="modal-title">{selectedBrief.title}</h2>
-              <div className="modal-meta">
-                <span className={`delta-badge ${selectedBrief.odds_delta >= 0 ? 'delta-up' : 'delta-down'}`}>
-                  {selectedBrief.odds_delta >= 0 ? '+' : ''}{(selectedBrief.odds_delta * 100).toFixed(1)}%
-                </span>
-                <span className="odds-badge">{(selectedBrief.current_odds * 100).toFixed(0)}¢ YES</span>
-              </div>
-            </div>
-
-            <div className="modal-body">
-              <div className="analysis-grid">
-                <div className="analysis-block bull">
-                  <div className="analysis-label">Bull Case</div>
-                  <div className="analysis-text-full">{selectedBrief.bull_case}</div>
-                </div>
-                <div className="analysis-block bear">
-                  <div className="analysis-label">Bear Case</div>
-                  <div className="analysis-text-full">{selectedBrief.bear_case}</div>
-                </div>
-              </div>
-
-              <div className="verdict-block-full">
-                <div className="analysis-label" style={{ color: 'var(--blue)' }}>AI Synthesis & Verdict</div>
-                {selectedBrief.verdict}
-              </div>
-
-              <div className="kelly-section-full">
-                <div className="kelly-info">
-                  <div className="kelly-label">Kelly Criterion Recommendation</div>
-                  <div className="kelly-bet">
-                    {selectedBrief.kelly?.suggested_bet_usd > 0 
-                      ? `$${selectedBrief.kelly.suggested_bet_usd.toFixed(2)}` 
-                      : 'No Positive Edge'}
-                  </div>
-                  <div className="kelly-reasoning-full">
-                    {selectedBrief.kelly?.reasoning || 'Insufficient edge for a mathematical bet.'}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="modal-footer">
-              <div className="ingested-at">
-                Generated at {new Date(selectedBrief.ingested_at).toLocaleString()}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* TOAST */}
       {toast && (
