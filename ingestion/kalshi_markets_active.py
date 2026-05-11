@@ -245,9 +245,12 @@ def preview(markets: list, n: int = 5):
 # ─────────────────────────────────────────────
 
 def main():
+    from zoneinfo import ZoneInfo
+    est_now = datetime.now(ZoneInfo("America/New_York"))
+    utc_now = datetime.now(timezone.utc)
     print("=" * 65)
     print("PredictIQ — Kalshi Active Markets Poll")
-    print(f"Run time : {datetime.now(timezone.utc).isoformat()}")
+    print(f"Run time : {utc_now.strftime('%Y-%m-%d %H:%M:%S UTC')}  ({est_now.strftime('%I:%M:%S %p EST')})")
     print(f"Output   : {BRONZE_DIR}")
     print("=" * 65)
 
@@ -304,5 +307,7 @@ if __name__ == "__main__":
             except OSError:
                 pass
             
-        print(f"\n[Kalshi Active] Poll complete. Sleeping {SLEEP_SECONDS // 60} minutes...")
+        from zoneinfo import ZoneInfo
+        est_now = datetime.now(ZoneInfo("America/New_York"))
+        print(f"\n[Kalshi Active] Poll complete at {est_now.strftime('%I:%M:%S %p EST')}. Sleeping {SLEEP_SECONDS // 60} minutes...")
         time.sleep(SLEEP_SECONDS)

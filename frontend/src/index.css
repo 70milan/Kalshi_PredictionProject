@@ -558,6 +558,120 @@ body {
   cursor: not-allowed;
 }
 
+/* ─── ORDERS TABLE ─── */
+.orders-table {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  font-size: 0.7rem;
+  font-family: 'JetBrains Mono', monospace;
+  margin-bottom: 1.5rem;
+  width: 100%;
+  table-layout: fixed;
+}
+
+.orders-header,
+.orders-row {
+  display: grid;
+  grid-template-columns: 3fr 0.6fr 0.5fr 0.8fr 0.8fr 0.8fr 0.4fr;
+  gap: 0;
+  padding: 0.45rem 0.9rem;
+  align-items: center;
+  min-height: 2.4rem;
+}
+
+.orders-header {
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+}
+
+.orders-row {
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
+  transition: background 0.15s;
+}
+
+.orders-row > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding-right: 0.5rem;
+}
+
+.orders-row:last-child { border-bottom: none; }
+.orders-row:hover { background: var(--bg-card); }
+
+.order-ticker { color: var(--blue); font-weight: 500; }
+
+.order-side.yes { color: var(--green); }
+.order-side.no  { color: var(--red); }
+
+.order-status.resting  { color: var(--amber); }
+.order-status.filled   { color: var(--green); }
+.order-status.cancelled { color: var(--text-muted); }
+
+/* ─── POSITIONS HEADER BUTTON ─── */
+.positions-header-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: 'Inter', sans-serif;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.positions-header-btn:hover {
+  border-color: var(--blue);
+  color: var(--blue);
+  background: var(--blue-dim);
+}
+
+.positions-badge {
+  background: var(--blue);
+  color: #000;
+  border-radius: 10px;
+  font-size: 0.6rem;
+  font-weight: 700;
+  padding: 1px 6px;
+  min-width: 16px;
+  text-align: center;
+}
+
+.cancel-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  border-radius: 4px;
+  width: 22px;
+  height: 22px;
+  font-size: 0.9rem;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.cancel-btn:hover {
+  background: var(--red-dim);
+  color: var(--red);
+  border-color: var(--red);
+}
+
 /* ─── EMPTY STATE ─── */
 .empty-state {
   text-align: center;

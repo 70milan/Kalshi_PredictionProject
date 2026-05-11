@@ -17,6 +17,7 @@ import time
 import hashlib
 import requests
 import duckdb
+import pandas as pd
 from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -107,44 +108,74 @@ def get_intelligence():
         bronze_latest = BRONZE_LATEST_PATH.replace("\\", "/")
 
         # Cross-reference against latest.parquet (overwritten every 15 min by ingestion).
-        # If a ticker is NOT in latest.parquet, the market has resolved/closed since the
-        # brief was written — we exclude it so only tradeable markets appear on the dashboard.
-        bronze_join = (
-            f"AND ticker IN (SELECT ticker FROM read_parquet('{bronze_latest}'))"
-            if os.path.exists(BRONZE_LATEST_PATH)
-            else "-- latest.parquet not found: skipping active-market filter"
-        )
-
-        query = f"""
-            SELECT
-                ticker,
-                title,
-                current_odds,
-                odds_delta,
-                mispricing_score,
-                bull_case,
-                bear_case,
-                verdict,
-                confidence_score,
-                ingested_at
-            FROM (
+        # We JOIN it to get the live market odds without spamming the Kalshi API on load.
+        if os.path.exists(BRONZE_LATEST_PATH):
+            query = f"""
                 SELECT
-                    *,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY ticker
-                        ORDER BY confidence_score DESC, ingested_at DESC
-                    ) AS rn
-                FROM read_parquet('{parquet_glob}', union_by_name=true)
-                WHERE CAST(ingested_at AS DATE) = CURRENT_DATE
-                  AND verdict NOT LIKE '%Error%'
-                  AND verdict NOT LIKE '%GHOST PUMP%'
-                  AND verdict IS NOT NULL
-                  AND verdict != ''
-                  {bronze_join}
-            )
-            WHERE rn = 1
-            ORDER BY mispricing_score DESC, confidence_score DESC
-        """
+                    b.ticker,
+                    b.title,
+                    b.current_odds,
+                    b.odds_delta,
+                    b.mispricing_score,
+                    b.bull_case,
+                    b.bear_case,
+                    b.verdict,
+                    b.confidence_score,
+                    b.ingested_at,
+                    b.recommended_side,
+                    m.yes_bid_dollars AS live_yes_bid,
+                    m.yes_ask_dollars AS live_yes_ask
+                FROM (
+                    SELECT
+                        *,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY ticker
+                            ORDER BY confidence_score DESC, ingested_at DESC
+                        ) AS rn
+                    FROM read_parquet('{parquet_glob}', union_by_name=true)
+                    WHERE CAST(ingested_at AS DATE) = CURRENT_DATE
+                      AND verdict NOT LIKE '%Error%'
+                      AND verdict NOT LIKE '%GHOST PUMP%'
+                      AND verdict IS NOT NULL
+                      AND verdict != ''
+                ) b
+                JOIN read_parquet('{bronze_latest}') m ON b.ticker = m.ticker
+                WHERE b.rn = 1
+                ORDER BY b.mispricing_score DESC, b.confidence_score DESC
+            """
+        else:
+            query = f"""
+                SELECT
+                    ticker,
+                    title,
+                    current_odds,
+                    odds_delta,
+                    mispricing_score,
+                    bull_case,
+                    bear_case,
+                    verdict,
+                    confidence_score,
+                    ingested_at,
+                    recommended_side,
+                    NULL AS live_yes_bid,
+                    NULL AS live_yes_ask
+                FROM (
+                    SELECT
+                        *,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY ticker
+                            ORDER BY confidence_score DESC, ingested_at DESC
+                        ) AS rn
+                    FROM read_parquet('{parquet_glob}', union_by_name=true)
+                    WHERE CAST(ingested_at AS DATE) = CURRENT_DATE
+                      AND verdict NOT LIKE '%Error%'
+                      AND verdict NOT LIKE '%GHOST PUMP%'
+                      AND verdict IS NOT NULL
+                      AND verdict != ''
+                )
+                WHERE rn = 1
+                ORDER BY mispricing_score DESC, confidence_score DESC
+            """
         df = con.execute(query).df()
     except Exception as e:
         print(f"[API ERROR] {e}")
@@ -194,6 +225,8 @@ def get_intelligence():
             "ingested_at":       str(row.get("ingested_at", "")),
             "kelly":             kelly,
             "safe_mode":         SAFE_MODE,
+            "live_yes_bid":      float(row["live_yes_bid"]) if row.get("live_yes_bid") is not None and not pd.isna(row.get("live_yes_bid")) else None,
+            "live_yes_ask":      float(row["live_yes_ask"]) if row.get("live_yes_ask") is not None and not pd.isna(row.get("live_yes_ask")) else None,
         })
 
     # Report when the active-market list was last refreshed
@@ -284,10 +317,10 @@ def get_market(ticker: str):
 # ─────────────────────────────────────────────
 
 class TradeRequest(BaseModel):
-    ticker:      str
-    side:        str   # "yes" or "no"
-    count:       int   # number of contracts
-    price_cents: int   # limit price in cents (e.g. 30 = 30c)
+    ticker:        str
+    side:          str    # "yes" or "no"
+    count:         int    # number of contracts
+    price_dollars: float  # ask price in dollars (e.g. 0.963)
 
 
 @app.post("/api/trade")
@@ -297,11 +330,11 @@ def execute_trade(trade: TradeRequest):
         file_exists = os.path.isfile(SIMULATED_TRADES_PATH)
         with open(SIMULATED_TRADES_PATH, "a", encoding="utf-8") as f:
             if not file_exists:
-                f.write("timestamp,ticker,side,count,price_cents,total_risk_usd\n")
+                f.write("timestamp,ticker,side,count,price_dollars,total_risk_usd\n")
             ts   = datetime.now(timezone.utc).isoformat()
-            risk = (trade.count * trade.price_cents) / 100.0
-            f.write(f"{ts},{trade.ticker},{trade.side},{trade.count},{trade.price_cents},{risk:.2f}\n")
-        print(f"[SAFE MODE] Logged: {trade.count}x {trade.ticker} @ {trade.price_cents}c")
+            risk = trade.count * trade.price_dollars
+            f.write(f"{ts},{trade.ticker},{trade.side},{trade.count},{trade.price_dollars:.4f},{risk:.2f}\n")
+        print(f"[SAFE MODE] Logged: {trade.count}x {trade.ticker} @ {trade.price_dollars:.4f}")
         return {
             "status":  "SAFE_MODE_LOGGED",
             "message": f"Trade recorded in {os.path.basename(SIMULATED_TRADES_PATH)}",
@@ -334,10 +367,11 @@ def execute_trade(trade: TradeRequest):
         "count":            trade.count,
     }
     if trade.side == "yes":
-        payload["yes_price"] = trade.price_cents
+        payload["yes_price_dollars"] = f"{trade.price_dollars:.4f}"
     else:
-        payload["no_price"] = trade.price_cents
+        payload["no_price_dollars"] = f"{trade.price_dollars:.4f}"
 
+    print(f"[TRADE] Submitting payload: {json.dumps(payload)}")
     try:
         r = requests.post(
             f"{KALSHI_BASE_URL}{path}",
@@ -345,6 +379,8 @@ def execute_trade(trade: TradeRequest):
             data=json.dumps(payload),
             timeout=10
         )
+        if not r.ok:
+            print(f"[TRADE ERROR] HTTP {r.status_code} — {r.text}")
         r.raise_for_status()
         resp = r.json()
         order = resp.get("order", {})
@@ -386,6 +422,49 @@ def get_portfolio_orders(status: str = "resting", limit: int = 20):
         return r.json()
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/api/portfolio/positions")
+def get_portfolio_positions():
+    """Fetches open positions (filled contracts you currently hold) from Kalshi."""
+    headers = _sign_kalshi_request("GET", "/trade-api/v2/portfolio/positions")
+    try:
+        r = requests.get(f"{KALSHI_BASE_URL}/portfolio/positions", headers=headers, timeout=10)
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.delete("/api/portfolio/orders/cancel/{ticker}")
+def cancel_orders_for_ticker(ticker: str):
+    """Finds and cancels all resting orders for a given ticker."""
+    list_headers = _sign_kalshi_request("GET", "/trade-api/v2/portfolio/orders")
+    try:
+        r = requests.get(f"{KALSHI_BASE_URL}/portfolio/orders",
+                         params={"ticker": ticker, "status": "resting", "limit": 50},
+                         headers=list_headers, timeout=10)
+        r.raise_for_status()
+        resting = r.json().get("orders", [])
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch orders: {e}")
+
+    if not resting:
+        return {"cancelled": [], "message": "No resting orders found for this ticker."}
+
+    cancelled = []
+    for order in resting:
+        order_id = order.get("order_id")
+        del_path = f"/trade-api/v2/portfolio/orders/{order_id}"
+        del_headers = _sign_kalshi_request("DELETE", del_path)
+        try:
+            del_r = requests.delete(f"{KALSHI_BASE_URL}/portfolio/orders/{order_id}",
+                                    headers=del_headers, timeout=10)
+            if del_r.ok:
+                cancelled.append(order_id)
+        except Exception:
+            pass
+    return {"cancelled": cancelled, "count": len(cancelled)}
 
 
 @app.get("/api/portfolio/balance")

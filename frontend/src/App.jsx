@@ -18,6 +18,9 @@ export default function App() {
   const [activeMarketFilter, setActiveMarketFilter] = useState(false);
   const [toast, setToast] = useState(null);
   const [filter, setFilter] = useState('all');
+  const [orders, setOrders] = useState([]);
+  const [showPositions, setShowPositions] = useState(false);
+  const [sideFilter, setSideFilter] = useState('all');
   const toastTimer = useRef(null);
 
   const showToast = useCallback((msg) => {
@@ -44,11 +47,26 @@ export default function App() {
     }
   }, []);
 
+  const fetchOrders = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/portfolio/positions`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const positions = (data.market_positions ?? data.positions ?? [])
+        .filter(p => parseFloat(p.position_fp ?? 0) !== 0);
+      setOrders(positions);
+    } catch (_) { }
+  }, []);
+
   useEffect(() => {
     fetchIntelligence();
-    const interval = setInterval(fetchIntelligence, POLL_MS);
+    fetchOrders();
+    const interval = setInterval(() => {
+      fetchIntelligence();
+      fetchOrders();
+    }, POLL_MS);
     return () => clearInterval(interval);
-  }, [fetchIntelligence]);
+  }, [fetchIntelligence, fetchOrders]);
 
   // Derived stats
   const withEdge = briefs.filter(b => b.kelly?.edge_detected);
@@ -57,7 +75,15 @@ export default function App() {
     : 0;
   const totalKelly = withEdge.reduce((s, b) => s + (b.kelly?.suggested_bet_usd ?? 0), 0);
 
-  const displayBriefs = filter === 'edge' ? withEdge : briefs;
+  const sortedBriefs = [...(filter === 'edge' ? withEdge : briefs)]
+    .sort((a, b) => new Date(b.ingested_at) - new Date(a.ingested_at));
+
+  const displayBriefs = sortedBriefs.filter(b => {
+    if (sideFilter === 'yes') return b.recommended_side === 'yes' && !/no trade/i.test(b.verdict ?? '');
+    if (sideFilter === 'no')  return b.recommended_side === 'no'  && !/no trade/i.test(b.verdict ?? '');
+    if (sideFilter === 'notrade') return /no trade/i.test(b.verdict ?? '');
+    return true;
+  });
 
   // How many minutes ago was latest.parquet written?
   const bronzeAgeMinutes = activeMarketsAsOf
@@ -78,6 +104,15 @@ export default function App() {
         </div>
 
         <div className="header-meta">
+          {/* POSITIONS BUTTON */}
+          <button
+            className="positions-header-btn"
+            onClick={() => setShowPositions(v => !v)}
+          >
+            Positions
+            {orders.length > 0 && <span className="positions-badge">{orders.length}</span>}
+          </button>
+
           {lastPoll && (
             <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
               Polled {lastPoll.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
@@ -104,6 +139,75 @@ export default function App() {
           <div className="bankroll-badge">${bankroll.toLocaleString()}</div>
         </div>
       </header>
+
+      {/* POSITIONS OVERLAY */}
+      {showPositions && (
+        <div className="modal-backdrop" onClick={() => setShowPositions(false)}>
+          <div className="modal-card" style={{ maxWidth: '860px' }} onClick={e => e.stopPropagation()}>
+            <button className="modal-close" onClick={() => setShowPositions(false)}>×</button>
+            <div style={{ padding: '1.2rem 1.5rem 0.5rem' }}>
+              <div className="section-heading" style={{ marginBottom: '0.75rem' }}>
+                Open Positions ({orders.length})
+              </div>
+              {safeMode ? (
+                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', padding: '1rem 0' }}>
+                  Safe Mode — trades are simulated. Switch to live mode to see real Kalshi positions.
+                </div>
+              ) : orders.length === 0 ? (
+                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', padding: '1rem 0' }}>
+                  No open positions on Kalshi.
+                </div>
+              ) : (() => {
+                const titleMap = Object.fromEntries(briefs.map(b => [b.ticker, b.title]));
+                const cancelOrder = async (ticker) => {
+                  try {
+                    const res = await fetch(`${API_BASE}/api/portfolio/orders/cancel/${ticker}`, { method: 'DELETE' });
+                    const data = await res.json();
+                    if (data.count > 0) showToast({ type: 'success', message: `Cancelled ${data.count} order(s) for ${ticker}` });
+                    else showToast({ type: 'warning', message: `No resting orders found for ${ticker}` });
+                    fetchOrders();
+                  } catch (e) {
+                    showToast({ type: 'error', message: `Cancel failed: ${e.message}` });
+                  }
+                };
+                return (
+                  <div className="orders-table" style={{ marginBottom: '1rem' }}>
+                    <div className="orders-header">
+                      <span>Market</span><span>Side</span><span>Qty</span>
+                      <span>Avg Cost</span><span>Value</span><span>P&L</span><span></span>
+                    </div>
+                    {orders.map((p) => {
+                      const posFp = parseFloat(p.position_fp ?? 0);
+                      const side = posFp > 0 ? 'yes' : 'no';
+                      const qty = Math.abs(posFp);
+                      const cost = parseFloat(p.total_traded_dollars ?? 0);
+                      const exposure = parseFloat(p.market_exposure_dollars ?? 0);
+                      const avgCents = qty > 0 ? `${((cost / qty) * 100).toFixed(1)}¢` : '—';
+                      const pnl = exposure - cost;
+                      const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+                      const title = titleMap[p.ticker];
+                      return (
+                        <div key={p.ticker} className="orders-row">
+                          <span style={{ overflow: 'hidden' }}>
+                            <div className="order-ticker" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.ticker}</div>
+                            {title && <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{title}</div>}
+                          </span>
+                          <span className={`order-side ${side}`}>{side.toUpperCase()}</span>
+                          <span>{qty}</span>
+                          <span>{avgCents}</span>
+                          <span>${exposure.toFixed(2)}</span>
+                          <span style={{ color: pnlColor }}>{pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}</span>
+                          <span><button className="cancel-btn" onClick={() => cancelOrder(p.ticker)} title="Cancel resting orders">×</button></span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="layout">
         {/* STATS BAR */}
@@ -159,9 +263,44 @@ export default function App() {
           ))}
         </div>
 
-        {/* SECTION */}
-        <div className="section-heading">
-          Predictive Movement Signals · Awaiting Approval
+        {/* SECTION + SIDE FILTER */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.6rem' }}>
+          <div className="section-heading" style={{ marginBottom: 0, flex: 'none' }}>
+            Predictive Movement Signals · Awaiting Approval
+          </div>
+          <div style={{ display: 'flex', gap: '0.35rem', marginLeft: 'auto' }}>
+            {[
+              { key: 'all',     label: 'All' },
+              { key: 'yes',     label: 'Buy YES' },
+              { key: 'no',      label: 'Buy NO' },
+              { key: 'notrade', label: 'No Trade' },
+            ].map(({ key, label }) => (
+              <button
+                key={key}
+                onClick={() => setSideFilter(key)}
+                style={{
+                  padding: '3px 10px',
+                  borderRadius: '12px',
+                  border: '1px solid',
+                  fontSize: '0.65rem',
+                  fontWeight: '600',
+                  cursor: 'pointer',
+                  fontFamily: 'Inter, sans-serif',
+                  letterSpacing: '0.04em',
+                  background: sideFilter === key
+                    ? key === 'yes' ? 'var(--green-dim)' : key === 'no' ? 'var(--red-dim)' : key === 'notrade' ? 'var(--amber-dim)' : 'var(--blue-dim)'
+                    : 'transparent',
+                  borderColor: sideFilter === key
+                    ? key === 'yes' ? 'var(--green)' : key === 'no' ? 'var(--red)' : key === 'notrade' ? 'var(--amber)' : 'var(--blue)'
+                    : 'var(--border)',
+                  color: sideFilter === key
+                    ? key === 'yes' ? 'var(--green)' : key === 'no' ? 'var(--red)' : key === 'notrade' ? 'var(--amber)' : 'var(--blue)'
+                    : 'var(--text-muted)',
+                  transition: 'all 0.15s',
+                }}
+              >{label}</button>
+            ))}
+          </div>
         </div>
 
         {/* CONTENT */}
@@ -190,10 +329,12 @@ export default function App() {
                 brief={brief}
                 bankroll={bankroll}
                 onTradeResult={showToast}
+                onTradeComplete={fetchOrders}
               />
             ))}
           </div>
         )}
+
       </div>
 
       {/* TOAST */}
