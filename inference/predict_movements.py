@@ -46,7 +46,8 @@ def get_predictive_candidates(con, min_score=80.0):
     WHERE flagged_candidate = true
       AND mispricing_score >= {min_score}
       AND ingested_at >= CURRENT_TIMESTAMP - INTERVAL '48 hours'
-    ORDER BY mispricing_score DESC, delta_15m ASC
+      AND yes_bid BETWEEN 0.25 AND 0.75
+    ORDER BY mispricing_score DESC
     LIMIT 3;
     """
     try:
@@ -153,7 +154,8 @@ RULES:
 - Be highly critical. If news is vague, recommend 'No Trade'.
 - Respond ONLY with a JSON object: bull_case, bear_case, verdict, recommended_side, confidence_pct.
 - recommended_side must be exactly "yes" or "no" (lowercase).
-- confidence_pct must be an integer 0-100."""
+- confidence_pct must be an integer 0-100.
+- verdict MUST start with one of: "Buy YES", "Buy NO", or "No Trade". Never write "Neutral", "N/A", or any other value."""
 
     try:
         response = groq_client.chat.completions.create(
@@ -233,16 +235,33 @@ def main():
         if brief is None:
             continue  # 429 — skip, next cycle retries
 
-        confidence = max([d['score'] for d in context_docs])
+        rag_score = max([d['score'] for d in context_docs])
+        llm_pct = float(brief.get("confidence_pct", 50)) / 100.0
+        confidence = round(0.6 * llm_pct + 0.4 * rag_score, 4)
+        current_odds = float(market['current_odds'])
+        llm_confidence = float(brief.get("confidence_pct", 50)) / 100.0
+        recommended = brief.get("recommended_side", "yes")
+
+        # Edge pre-check: Kelly is only positive when LLM confidence > market-implied probability
+        # for the recommended side. Skip if the market is already more confident than the LLM.
+        market_prob = current_odds if recommended == "yes" else (1.0 - current_odds)
+        if confidence <= market_prob:
+            print(f"    > No edge: LLM {confidence:.0%} conf vs market {market_prob:.0%} implied — skipping")
+            continue
+
+        # odds_delta = implied move: LLM-implied YES probability minus market YES probability.
+        # For "buy yes": implied YES = llm_confidence. For "buy no": implied YES = 1 - llm_confidence.
+        implied_yes = llm_confidence if recommended == "yes" else (1.0 - llm_confidence)
+        odds_delta = round(implied_yes - current_odds, 4)
         row = {
             "ticker":           market['ticker'],
             "title":            market['title'],
             "bull_case":        _flatten_llm_field(brief.get("bull_case", "")),
             "bear_case":        _flatten_llm_field(brief.get("bear_case", "")),
             "verdict":          _flatten_llm_field(brief.get("verdict", "")),
-            "recommended_side": brief.get("recommended_side", "yes"),
-            "current_odds":     float(market['current_odds']),
-            "odds_delta":       float(market['delta_15m']),
+            "recommended_side": recommended,
+            "current_odds":     current_odds,
+            "odds_delta":       odds_delta,
             "mispricing_score": float(market['mispricing_score']),
             "confidence_score": float(confidence),
             "event_at":         current_time.isoformat(),

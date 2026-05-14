@@ -29,7 +29,8 @@ def generate_gdelt_summaries(spark, gkg_path, events_path):
     # 1. Load and Standardize GKG Entities
     df_gkg = spark.read.format("delta").load(gkg_path) \
         .filter(F.col("ingested_at").cast("string") >= cutoff_90d) \
-        .select("ingested_at", "raw_tone_stats", "persons_array", "themes_array", "orgs_array", "locs_array")
+        .select("ingested_at", "raw_tone_stats", "persons_array", "themes_array", "orgs_array", "locs_array") \
+        .coalesce(16)
     
     df_gkg = df_gkg.withColumn("tone", F.split(F.col("raw_tone_stats"), ",").getItem(0).cast("double"))
     df_gkg = df_gkg.withColumn("ts", F.col("ingested_at").cast("timestamp").cast("long"))
@@ -82,38 +83,52 @@ def generate_gdelt_summaries(spark, gkg_path, events_path):
 
     return df_gold
 
+def run(spark):
+    """Runs the transform using a caller-managed SparkSession (no spark.stop)."""
+    gkg_path = os.path.join(ROOT, "data", "silver", "gdelt_gkg_history")
+    events_path = os.path.join(ROOT, "data", "silver", "gdelt_events_history")
+    gold_path = os.path.join(ROOT, "data", "gold", "gdelt_summaries")
+
+    df_gold = generate_gdelt_summaries(spark, gkg_path, events_path)
+    if df_gold is None:
+        return
+
+    # Cache before 3 uses — avoids recomputing the full window pipeline each time
+    df_gold.cache()
+    row_count = df_gold.count()  # triggers cache population
+
+    # Save History (Append)
+    history_path = gold_path + "_history"
+    df_gold.write.format("delta").mode("append").option("mergeSchema", "true").save(history_path)
+
+    # Save Current (Overwrite)
+    df_gold.write.format("delta").mode("overwrite").option("mergeSchema", "true").save(gold_path)
+
+    df_gold.unpersist()
+    print(f"[Gold GDELT] SUCCESS. Velocity signals generated for {row_count} entities.")
+
+
 def main():
     print("[Gold GDELT] Initializing PySpark Session for Velocity Summaries...")
     builder = SparkSession.builder \
         .appName("PredictIQ_Gold_GDELT_Velocity") \
         .config("spark.driver.memory", "4g") \
+        .config("spark.sql.shuffle.partitions", "16") \
+        .config("spark.sql.adaptive.enabled", "true") \
+        .config("spark.sql.adaptive.coalescePartitions.enabled", "true") \
+        .config("spark.sql.adaptive.coalescePartitions.minPartitionSize", "32mb") \
+        .config("spark.sql.files.maxPartitionBytes", "128mb") \
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension") \
         .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog") \
         .config("spark.sql.parquet.enableVectorizedReader", "false")
 
     spark = configure_spark_with_delta_pip(builder).getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
-
-    gkg_path = os.path.join(ROOT, "data", "silver", "gdelt_gkg_history")
-    events_path = os.path.join(ROOT, "data", "silver", "gdelt_events_history")
-    gold_path = os.path.join(ROOT, "data", "gold", "gdelt_summaries")
-
     try:
-        df_gold = generate_gdelt_summaries(spark, gkg_path, events_path)
-        if df_gold is None: return
-
-        # Save History (Append)
-        history_path = gold_path + "_history"
-        df_gold.write.format("delta").mode("append").option("mergeSchema", "true").save(history_path)
-
-        # Save Current (Overwrite)
-        df_gold.write.format("delta").mode("overwrite").option("mergeSchema", "true").save(gold_path)
-        
-        print(f"[Gold GDELT] SUCCESS. Velocity signals generated for {df_gold.count()} entities.")
-        
+        run(spark)
     except Exception as e:
         print(f"[Gold GDELT] FATAL ERROR: {str(e)}")
-        raise e
+        raise
     finally:
         spark.stop()
 

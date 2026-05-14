@@ -272,9 +272,55 @@ def merge_current(spark, df_spark, silver_current_path):
 # MAIN
 # ─────────────────────────────────────────────
 
+def run(spark):
+    """Runs the transform using a caller-managed SparkSession (no spark.stop)."""
+    bronze_base    = os.path.join(ROOT, "data", "bronze", "gdelt", "gdelt_events")
+    silver_history = os.path.join(ROOT, "data", "silver", "gdelt_events_history")
+    silver_current = os.path.join(ROOT, "data", "silver", "gdelt_events_current")
+    reference_dir  = os.path.join(ROOT, "reference")
+
+    # Step 1: Watermark
+    watermark = get_watermark(spark, silver_history)
+    print(f"[Silver GDELT Events] Watermark: {watermark}")
+
+    # Step 2: Discover Bronze files
+    bronze_files = discover_bronze_files(bronze_base, watermark)
+    if not bronze_files:
+        print("[Silver GDELT Events] No Bronze files found. Exiting.")
+        return
+    print(f"[Silver GDELT Events] Found {len(bronze_files)} Bronze files.")
+
+    # Step 3: Chunked load via Spark — watermark filter applied per file
+    df_bronze = load_bronze_chunked(spark, bronze_files, watermark)
+    if df_bronze is None:
+        print("[Silver GDELT Events] No new data beyond watermark. Exiting.")
+        return
+    row_count = df_bronze.count()
+    print(f"[Silver GDELT Events] Loaded {row_count} new rows after watermark filter.")
+
+    # Step 4: Reference joins via broadcast (pure PySpark)
+    refs = load_references(spark, reference_dir)
+    df_enriched = enrich_events(df_bronze, refs)
+    print(f"[Silver GDELT Events] Enrichment complete.")
+
+    # Step 5: Idempotency guard
+    batch_min = df_enriched.select(F.min("ingested_at")).collect()[0][0]
+    if is_batch_already_written(spark, silver_history, batch_min):
+        print("[Silver GDELT Events] Batch already written. Skipping.")
+        return
+
+    # Step 6: Write history (append-only)
+    write_history(df_enriched, silver_history)
+    print(f"[Silver GDELT Events] History append complete.")
+
+    # Step 7: Merge current (upsert on event_id)
+    merge_current(spark, df_enriched, silver_current)
+
+    print(f"[Silver GDELT Events] SUCCESS. {row_count} rows written.")
+
+
 def main():
     print("[Silver GDELT Events] Initializing Stable Decoder v5...")
-
     ivy_dir = os.environ.get("IVY_PACKAGE_DIR", "")
     builder = (
         SparkSession.builder
@@ -288,55 +334,11 @@ def main():
         builder = builder.config("spark.jars.ivy", ivy_dir)
     spark = configure_spark_with_delta_pip(builder).getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
-
-    bronze_base    = os.path.join(ROOT, "data", "bronze", "gdelt", "gdelt_events")
-    silver_history = os.path.join(ROOT, "data", "silver", "gdelt_events_history")
-    silver_current = os.path.join(ROOT, "data", "silver", "gdelt_events_current")
-    reference_dir  = os.path.join(ROOT, "reference")
-
     try:
-        # Step 1: Watermark
-        watermark = get_watermark(spark, silver_history)
-        print(f"[Silver GDELT Events] Watermark: {watermark}")
-
-        # Step 2: Discover Bronze files
-        bronze_files = discover_bronze_files(bronze_base, watermark)
-        if not bronze_files:
-            print("[Silver GDELT Events] No Bronze files found. Exiting.")
-            return
-        print(f"[Silver GDELT Events] Found {len(bronze_files)} Bronze files.")
-
-        # Step 3: Chunked load via Spark — watermark filter applied per file
-        df_bronze = load_bronze_chunked(spark, bronze_files, watermark)
-        if df_bronze is None:
-            print("[Silver GDELT Events] No new data beyond watermark. Exiting.")
-            return
-        row_count = df_bronze.count()
-        print(f"[Silver GDELT Events] Loaded {row_count} new rows after watermark filter.")
-
-        # Step 4: Reference joins via broadcast (pure PySpark)
-        refs = load_references(spark, reference_dir)
-        df_enriched = enrich_events(df_bronze, refs)
-        print(f"[Silver GDELT Events] Enrichment complete.")
-
-        # Step 5: Idempotency guard
-        batch_min = df_enriched.select(F.min("ingested_at")).collect()[0][0]
-        if is_batch_already_written(spark, silver_history, batch_min):
-            print("[Silver GDELT Events] Batch already written. Skipping.")
-            return
-
-        # Step 6: Write history (append-only)
-        write_history(df_enriched, silver_history)
-        print(f"[Silver GDELT Events] History append complete.")
-
-        # Step 7: Merge current (upsert on event_id)
-        merge_current(spark, df_enriched, silver_current)
-
-        print(f"[Silver GDELT Events] SUCCESS. {row_count} rows written.")
-
+        run(spark)
     except Exception as e:
         print(f"[Silver GDELT Events] FAILURE: {e}")
-        raise e
+        raise
     finally:
         spark.stop()
 

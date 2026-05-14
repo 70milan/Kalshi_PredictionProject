@@ -50,24 +50,19 @@ DAILY_SETTLEMENT_SCRIPT = os.path.join(
     PROJECT_ROOT, "ingestion", "kalshi_daily_settlement.py"
 )
 
-SILVER_SCRIPTS = [
-    os.path.join(PROJECT_ROOT, "transformation", "silver_kalshi_transform.py"),
-    os.path.join(PROJECT_ROOT, "transformation", "silver_news_transform.py"),
-    os.path.join(PROJECT_ROOT, "transformation", "silver_gdelt_events_transform.py"),
-    os.path.join(PROJECT_ROOT, "transformation", "silver_gdelt_gkg_transform.py"),
-]
-
-GOLD_SCRIPTS = [
-    os.path.join(PROJECT_ROOT, "transformation", "gold_market_summaries_transform.py"),
-    os.path.join(PROJECT_ROOT, "transformation", "gold_news_summaries_transform.py"),
-    os.path.join(PROJECT_ROOT, "transformation", "gold_gdelt_summaries_transform.py"),
-]
+# All 7 Silver+Gold transforms now run in a single SparkSession via spark_pipeline.py.
+# One JVM startup instead of 7 (~14 minutes saved per cycle).
+SPARK_PIPELINE_SCRIPT = os.path.join(PROJECT_ROOT, "orchestration", "spark_pipeline.py")
 
 # Phase 3: Vector Bridge (Delta -> ChromaDB)
 VECTOR_SYNC_SCRIPT = os.path.join(PROJECT_ROOT, "rag", "embed_silver_data.py")
 
 # Phase 4: Inference (LLM Synthesis - Predictive Scanner)
 INFERENCE_SCRIPT = os.path.join(PROJECT_ROOT, "inference", "predict_movements.py")
+
+# Phase 4b: Position tracking + exit evaluation
+LEDGER_SCRIPT = os.path.join(PROJECT_ROOT, "inference", "build_position_ledger.py")
+EXIT_SCRIPT   = os.path.join(PROJECT_ROOT, "inference", "exit_evaluator.py")
 
 POLL_INTERVAL = 300   # 5 minutes AFTER the cycle completes (not a fixed cadence)
 
@@ -196,40 +191,37 @@ def run_etl_cycle():
     if not has_new_bronze_data(watermark):
         print("\n[Phase 1/3] No new Bronze data detected. Skipping transforms.")
     else:
-        # --- Silver Layer ---
-        print("\n[Phase 1/3] Silver Transformations")
+        # --- Silver + Gold in a single Spark session ---
+        # spark_pipeline.py runs all 7 transforms inside one JVM. Exit code 0
+        # means everything succeeded; 1 means at least one transform failed
+        # (the script keeps going past per-transform failures).
+        print("\n[Phase 1/3] Silver + Gold Transformations (unified Spark session)")
         print("-" * 40)
-        silver_ok = 0
-        for script in SILVER_SCRIPTS:
-            if run_script(script, timeout_seconds=1800):  # 30 min for large catch-up runs
-                silver_ok += 1
-        print(f"    Silver: {silver_ok}/{len(SILVER_SCRIPTS)} completed.")
-
-        # --- Gold Layer ---
-        print("\n[Phase 2/3] Gold Transformations")
-        print("-" * 40)
-        gold_ok = 0
-        for script in GOLD_SCRIPTS:
-            if run_script(script, timeout_seconds=900):
-                gold_ok += 1
-        print(f"    Gold: {gold_ok}/{len(GOLD_SCRIPTS)} completed.")
+        # Generous timeout: cold start + all 7 transforms. Previous separate-script
+        # timeouts summed to ~4 hours; ~50 min is plenty for one shared session.
+        pipeline_ok = run_script(SPARK_PIPELINE_SCRIPT, timeout_seconds=3000)
 
         # --- Update watermark ---
         set_watermark()
 
-        total = silver_ok + gold_ok
-        expected = len(SILVER_SCRIPTS) + len(GOLD_SCRIPTS)
-        print(f"\n    [ RESULT ] {total}/{expected} transforms succeeded.")
+        print(f"\n    [ RESULT ] Spark pipeline {'succeeded' if pipeline_ok else 'had partial failures'}.")
 
-        # --- Phase 3: Vector Sync ---
-        print("\n[Phase 3/4] Vector Bridge Synchronization")
+        # --- Phase 2: Vector Sync ---
+        print("\n[Phase 2/3] Vector Bridge Synchronization")
         print("-" * 40)
         run_script(VECTOR_SYNC_SCRIPT, timeout_seconds=1200)
 
-        # --- Phase 4: Inference Engine ---
-        print("\n[Phase 4/4] AI Inference & Mispricing Detection")
+        # --- Phase 3: Inference Engine ---
+        print("\n[Phase 3/3] AI Inference & Mispricing Detection")
         print("-" * 40)
         run_script(INFERENCE_SCRIPT, timeout_seconds=1800)  # 30 min for large market batches
+
+    # --- Phase 4b: Position Ledger + Exit Evaluation (runs EVERY cycle, not gated on bronze)
+    # Exits are time-sensitive — prices move regardless of new bronze data.
+    print("\n[Phase 4b] Position Ledger + Exit Evaluation")
+    print("-" * 40)
+    run_script(LEDGER_SCRIPT, timeout_seconds=120)
+    run_script(EXIT_SCRIPT,   timeout_seconds=120)
 
     # --- Phase 5: Daily Settlement (once per day, AFTER transforms) ---
     if should_run_daily_settlement():

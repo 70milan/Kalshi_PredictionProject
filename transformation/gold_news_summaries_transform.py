@@ -67,39 +67,52 @@ def generate_news_summaries(spark, silver_news_path):
 
     return df_gold
 
+def run(spark):
+    """Runs the transform using a caller-managed SparkSession (no spark.stop)."""
+    silver_path = os.path.join(ROOT, "data", "silver", "news_articles_enriched")
+    gold_path = os.path.join(ROOT, "data", "gold", "news_summaries")
+
+    df_gold = generate_news_summaries(spark, silver_path)
+    if df_gold is None:
+        print("[Gold News] No silver data found. Exiting.")
+        return
+
+    # Cache before 3 uses (history append, current overwrite, count) — avoids recompute
+    df_gold.cache()
+    row_count = df_gold.count()
+
+    # Save History
+    history_path = gold_path + "_history"
+    df_gold.write.format("delta").mode("append").option("mergeSchema", "true").save(history_path)
+
+    # Save Snapshot
+    df_gold.write.format("delta").mode("overwrite").option("mergeSchema", "true").save(gold_path)
+
+    df_gold.unpersist()
+    print(f"[Gold News] SUCCESS. Summarized {row_count} sources.")
+
+
 def main():
     print("[Gold News] Initializing PySpark Session...")
     builder = SparkSession.builder \
         .appName("PredictIQ_Gold_News_Summaries") \
         .config("spark.driver.memory", "4g") \
+        .config("spark.sql.shuffle.partitions", "16") \
+        .config("spark.sql.adaptive.enabled", "true") \
+        .config("spark.sql.adaptive.coalescePartitions.enabled", "true") \
+        .config("spark.sql.adaptive.coalescePartitions.minPartitionSize", "32mb") \
+        .config("spark.sql.files.maxPartitionBytes", "128mb") \
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension") \
         .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog") \
         .config("spark.sql.parquet.enableVectorizedReader", "false")
 
     spark = configure_spark_with_delta_pip(builder).getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
-
-    silver_path = os.path.join(ROOT, "data", "silver", "news_articles_enriched")
-    gold_path = os.path.join(ROOT, "data", "gold", "news_summaries")
-
     try:
-        df_gold = generate_news_summaries(spark, silver_path)
-        if df_gold is None:
-            print("[Gold News] No silver data found. Exiting.")
-            return
-
-        # Save History
-        history_path = gold_path + "_history"
-        df_gold.write.format("delta").mode("append").option("mergeSchema", "true").save(history_path)
-
-        # Save Snapshot
-        df_gold.write.format("delta").mode("overwrite").option("mergeSchema", "true").save(gold_path)
-
-        print(f"[Gold News] SUCCESS. Summarized {df_gold.count()} sources.")
-        
+        run(spark)
     except Exception as e:
         print(f"[Gold News] FATAL ERROR: {str(e)}")
-        raise e
+        raise
     finally:
         spark.stop()
 

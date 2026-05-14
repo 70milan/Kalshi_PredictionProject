@@ -196,9 +196,86 @@ def merge_current(spark, df_silver, silver_current_path):
 # MAIN
 # ─────────────────────────────────────────────
 
+def run(spark):
+    """Runs the transform using a caller-managed SparkSession (no spark.stop)."""
+    bronze_base    = os.path.join(ROOT, "data", "bronze", "gdelt", "gdelt_gkg")
+    silver_history = os.path.join(ROOT, "data", "silver", "gdelt_gkg_history")
+    silver_current = os.path.join(ROOT, "data", "silver", "gdelt_gkg_current")
+
+    # Step 1: Watermark
+    watermark = get_watermark(spark, silver_history)
+    print(f"[Silver GDELT GKG] Watermark: {watermark}")
+
+    # Step 2: Discover Bronze files
+    bronze_files = discover_bronze_files(bronze_base, watermark)
+    if not bronze_files:
+        print("[Silver GDELT GKG] No Bronze files found. Exiting.")
+        return
+    print(f"[Silver GDELT GKG] Found {len(bronze_files)} Bronze files.")
+
+    # Step 3: Chunked Spark load — watermark filter applied per file
+    df_bronze = load_bronze_chunked(spark, bronze_files, watermark)
+    if df_bronze is None:
+        print("[Silver GDELT GKG] No new data beyond watermark. Exiting.")
+        return
+
+    # Step 4: Column detection — V2 fields preferred, fallback to V1
+    persons_col = "V2Persons" if "V2Persons" in df_bronze.columns else "Persons"
+    themes_col  = "V2Themes"  if "V2Themes"  in df_bronze.columns else "Themes"
+    print(f"[Silver GDELT GKG] Using persons_col={persons_col}, themes_col={themes_col}")
+
+    # Step 5: Enrichment — explode GKG lists into clean Spark arrays
+    df_enriched = (
+        df_bronze
+        .withColumn("persons_array", clean_gkg_list(persons_col))
+        .withColumn("themes_array",  clean_gkg_list(themes_col))
+        .withColumn("orgs_array",    clean_gkg_list("V2Organizations"))
+        .withColumn("locs_array",    clean_gkg_list("V2Locations"))
+        .withColumn("names_array",
+                    F.when(F.col("AllNames").isNotNull(), clean_gkg_list("AllNames"))
+                     .otherwise(F.array()))
+    )
+
+    # Step 6: Select human-readable Silver schema
+    # New fields use coalesce to handle old Bronze files that lack the columns
+    bronze_cols = set(df_enriched.columns)
+    df_silver = df_enriched.select(
+        F.col("GKGRECORDID").alias("gkg_record_id"),
+        F.col("DATE").cast("string").alias("event_date"),
+        F.col("SOURCEURL").alias("doc_url"),
+        F.col("themes_array"),
+        F.col("persons_array"),
+        F.col("orgs_array"),
+        F.col("locs_array"),
+        F.col("names_array"),
+        F.col("V2Tone").alias("raw_tone_stats"),
+        (F.col("V2Counts") if "V2Counts" in bronze_cols
+         else F.lit(None).cast("string")).alias("raw_counts"),
+        (F.col("Amounts") if "Amounts" in bronze_cols
+         else F.lit(None).cast("string")).alias("raw_amounts"),
+        (F.col("GCAM") if "GCAM" in bronze_cols
+         else F.lit(None).cast("string")).alias("raw_gcam"),
+        F.col("ingested_at").cast("string").alias("ingested_at"),
+    )
+
+    # Step 7: Idempotency guard
+    batch_min = df_silver.select(F.min("ingested_at")).collect()[0][0]
+    if is_batch_already_written(spark, silver_history, batch_min):
+        print("[Silver GDELT GKG] Batch already written. Skipping.")
+        return
+
+    # Step 8: Write history (append-only)
+    write_history(df_silver, silver_history)
+    print("[Silver GDELT GKG] History append complete.")
+
+    # Step 9: Merge current (upsert on gkg_record_id)
+    merge_current(spark, df_silver, silver_current)
+
+    print("[Silver GDELT GKG] SUCCESS.")
+
+
 def main():
     print("[Silver GDELT GKG] Initializing GKG Exploder v5...")
-
     ivy_dir = os.environ.get("IVY_PACKAGE_DIR", "")
     builder = (
         SparkSession.builder
@@ -212,86 +289,11 @@ def main():
         builder = builder.config("spark.jars.ivy", ivy_dir)
     spark = configure_spark_with_delta_pip(builder).getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
-
-    bronze_base    = os.path.join(ROOT, "data", "bronze", "gdelt", "gdelt_gkg")
-    silver_history = os.path.join(ROOT, "data", "silver", "gdelt_gkg_history")
-    silver_current = os.path.join(ROOT, "data", "silver", "gdelt_gkg_current")
-
     try:
-        # Step 1: Watermark
-        watermark = get_watermark(spark, silver_history)
-        print(f"[Silver GDELT GKG] Watermark: {watermark}")
-
-        # Step 2: Discover Bronze files
-        bronze_files = discover_bronze_files(bronze_base, watermark)
-        if not bronze_files:
-            print("[Silver GDELT GKG] No Bronze files found. Exiting.")
-            return
-        print(f"[Silver GDELT GKG] Found {len(bronze_files)} Bronze files.")
-
-        # Step 3: Chunked Spark load — watermark filter applied per file
-        df_bronze = load_bronze_chunked(spark, bronze_files, watermark)
-        if df_bronze is None:
-            print("[Silver GDELT GKG] No new data beyond watermark. Exiting.")
-            return
-
-        # Step 4: Column detection — V2 fields preferred, fallback to V1
-        persons_col = "V2Persons" if "V2Persons" in df_bronze.columns else "Persons"
-        themes_col  = "V2Themes"  if "V2Themes"  in df_bronze.columns else "Themes"
-        print(f"[Silver GDELT GKG] Using persons_col={persons_col}, themes_col={themes_col}")
-
-        # Step 5: Enrichment — explode GKG lists into clean Spark arrays
-        df_enriched = (
-            df_bronze
-            .withColumn("persons_array", clean_gkg_list(persons_col))
-            .withColumn("themes_array",  clean_gkg_list(themes_col))
-            .withColumn("orgs_array",    clean_gkg_list("V2Organizations"))
-            .withColumn("locs_array",    clean_gkg_list("V2Locations"))
-            .withColumn("names_array",
-                        F.when(F.col("AllNames").isNotNull(), clean_gkg_list("AllNames"))
-                         .otherwise(F.array()))
-        )
-
-        # Step 6: Select human-readable Silver schema
-        # New fields use coalesce to handle old Bronze files that lack the columns
-        bronze_cols = set(df_enriched.columns)
-        df_silver = df_enriched.select(
-            F.col("GKGRECORDID").alias("gkg_record_id"),
-            F.col("DATE").cast("string").alias("event_date"),
-            F.col("SOURCEURL").alias("doc_url"),
-            F.col("themes_array"),
-            F.col("persons_array"),
-            F.col("orgs_array"),
-            F.col("locs_array"),
-            F.col("names_array"),
-            F.col("V2Tone").alias("raw_tone_stats"),
-            (F.col("V2Counts") if "V2Counts" in bronze_cols
-             else F.lit(None).cast("string")).alias("raw_counts"),
-            (F.col("Amounts") if "Amounts" in bronze_cols
-             else F.lit(None).cast("string")).alias("raw_amounts"),
-            (F.col("GCAM") if "GCAM" in bronze_cols
-             else F.lit(None).cast("string")).alias("raw_gcam"),
-            F.col("ingested_at").cast("string").alias("ingested_at"),
-        )
-
-        # Step 7: Idempotency guard
-        batch_min = df_silver.select(F.min("ingested_at")).collect()[0][0]
-        if is_batch_already_written(spark, silver_history, batch_min):
-            print("[Silver GDELT GKG] Batch already written. Skipping.")
-            return
-
-        # Step 8: Write history (append-only)
-        write_history(df_silver, silver_history)
-        print("[Silver GDELT GKG] History append complete.")
-
-        # Step 9: Merge current (upsert on gkg_record_id)
-        merge_current(spark, df_silver, silver_current)
-
-        print("[Silver GDELT GKG] SUCCESS.")
-
+        run(spark)
     except Exception as e:
         print(f"[Silver GDELT GKG] FAILURE: {e}")
-        raise e
+        raise
     finally:
         spark.stop()
 

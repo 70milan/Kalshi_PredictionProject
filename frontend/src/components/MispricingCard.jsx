@@ -5,7 +5,7 @@ const API_BASE = window.location.hostname === 'localhost'
   ? 'http://localhost:8000'
   : `http://${window.location.hostname}:8000`;
 
-export default function MispricingCard({ brief, bankroll, onTradeResult, onTradeComplete }) {
+export default function MispricingCard({ brief, bankroll, onTradeResult, onTradeComplete, isNew = false }) {
   const [executing, setExecuting] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
   const [confirm, setConfirm] = useState(null); // { side, priceDollars, recommended }
@@ -121,9 +121,19 @@ export default function MispricingCard({ brief, bankroll, onTradeResult, onTrade
   }`;
 
   const briefDate = new Date(brief.ingested_at);
-  const ageHours = (Date.now() - briefDate.getTime()) / (1000 * 60 * 60);
-  const isStale = ageHours > 1.5;
-  const staleColor = ageHours < 2 ? '#f59e0b' : ageHours < 6 ? '#f97316' : '#ef4444';
+  const ageMin = (Date.now() - briefDate.getTime()) / (1000 * 60);
+  
+  const freshnessColor =
+    ageMin <= 30  ? 'var(--blue)'   :
+    ageMin <= 90  ? 'var(--green)'  :
+    ageMin <= 180 ? 'var(--amber)'  :
+    ageMin <= 360 ? '#e89556'       :
+                    'var(--red)';
+
+  const freshnessTitle =
+    ageMin <= 30  ? 'New (< 30m)'                       :
+    ageMin <= 90  ? `Fresh (${Math.floor(ageMin)}m ago)` :
+                    `Stale (${(ageMin / 60).toFixed(1)}h ago)`;
 
   const tradeBtnLabel =
     executing ? 'Fetching…' :
@@ -137,7 +147,9 @@ export default function MispricingCard({ brief, bankroll, onTradeResult, onTrade
       <div className="brief-card" onClick={() => setIsExpanded(true)} style={{ cursor: 'pointer' }}>
         <div className="card-header">
           <div style={{ minWidth: 0 }}>
-            <div className="card-ticker">{brief.ticker}</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <div className="card-ticker">{brief.ticker}</div>
+            </div>
             <div className="card-title">{brief.title}</div>
           </div>
           <div className="card-badges" style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px' }}>
@@ -147,11 +159,20 @@ export default function MispricingCard({ brief, bankroll, onTradeResult, onTrade
               </div>
               <div className="odds-badge">{oddsDisplay} YES</div>
             </div>
-            {(brief.live_yes_bid != null && brief.live_yes_ask != null) && (
-              <div style={{ fontSize: '0.75rem', color: '#9ca3af', fontWeight: '500' }}>
-                Live: {Math.round(brief.live_yes_bid * 100)}¢ / {Math.round(brief.live_yes_ask * 100)}¢
-              </div>
-            )}
+            {(brief.live_yes_bid != null && brief.live_yes_ask != null) && (() => {
+              const side = brief.recommended_side ?? 'yes';
+              const bid = side === 'no'
+                ? Math.round((1 - brief.live_yes_ask) * 100)
+                : Math.round(brief.live_yes_bid * 100);
+              const ask = side === 'no'
+                ? Math.round((1 - brief.live_yes_bid) * 100)
+                : Math.round(brief.live_yes_ask * 100);
+              return (
+                <div style={{ fontSize: '0.75rem', color: '#9ca3af', fontWeight: '500' }}>
+                  Live {side.toUpperCase()}: {bid}¢ / {ask}¢
+                </div>
+              );
+            })()}
           </div>
         </div>
 
@@ -172,25 +193,27 @@ export default function MispricingCard({ brief, bankroll, onTradeResult, onTrade
         </div>
 
         <div className="card-footer">
-          <div className="ingested-at">
-            {isStale && <span style={{ color: staleColor, fontWeight: '600', marginRight: '4px' }}>Stale</span>}
+          <div className="ingested-at" title={freshnessTitle}>
+            <span className="freshness-dot" style={{ background: freshnessColor }} />
             {briefDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
           </div>
           <button className={tradeBtnClass} onClick={handleTradeClick} disabled={executing || isNoTrade}>
             {tradeBtnLabel}
           </button>
         </div>
-      </div>
+        </div>
 
-      {/* ── MODAL OVERLAY (centered, fixed) ── */}
-      {isExpanded && createPortal(
+        {/* ── MODAL OVERLAY (centered, fixed) ── */}
+        {isExpanded && createPortal(
         <div className="modal-backdrop" onClick={() => setIsExpanded(false)}>
           <div className="modal-card" onClick={(e) => e.stopPropagation()}>
             <button className="modal-close" onClick={() => setIsExpanded(false)}>×</button>
 
             <div className="card-header" style={{ borderRadius: '12px 12px 0 0', paddingRight: '2.5rem' }}>
               <div style={{ minWidth: 0 }}>
-                <div className="card-ticker">{brief.ticker}</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <div className="card-ticker">{brief.ticker}</div>
+                </div>
                 <div className="card-title" style={{ WebkitLineClamp: 'unset', display: 'block' }}>{brief.title}</div>
               </div>
               <div className="card-badges" style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px' }}>
@@ -200,11 +223,20 @@ export default function MispricingCard({ brief, bankroll, onTradeResult, onTrade
                   </div>
                   <div className="odds-badge">{oddsDisplay} YES</div>
                 </div>
-                {(brief.live_yes_bid != null && brief.live_yes_ask != null) && (
-                  <div style={{ fontSize: '0.75rem', color: '#9ca3af', fontWeight: '500' }}>
-                    Live: {Math.round(brief.live_yes_bid * 100)}¢ / {Math.round(brief.live_yes_ask * 100)}¢
-                  </div>
-                )}
+                {(brief.live_yes_bid != null && brief.live_yes_ask != null) && (() => {
+                  const side = brief.recommended_side ?? 'yes';
+                  const bid = side === 'no'
+                    ? Math.round((1 - brief.live_yes_ask) * 100)
+                    : Math.round(brief.live_yes_bid * 100);
+                  const ask = side === 'no'
+                    ? Math.round((1 - brief.live_yes_bid) * 100)
+                    : Math.round(brief.live_yes_bid * 100);
+                  return (
+                    <div style={{ fontSize: '0.75rem', color: '#9ca3af', fontWeight: '500' }}>
+                      Live {side.toUpperCase()}: {bid}¢ / {ask}¢
+                    </div>
+                  );
+                })()}
               </div>
             </div>
 
@@ -248,8 +280,8 @@ export default function MispricingCard({ brief, bankroll, onTradeResult, onTrade
             </div>
 
             <div className="card-footer">
-              <div className="ingested-at">
-                {isStale && <span style={{ color: staleColor, fontWeight: '600', marginRight: '6px' }}>Stale ({Math.floor(ageHours)}h)</span>}
+              <div className="ingested-at" title={freshnessTitle}>
+                <span className="freshness-dot" style={{ background: freshnessColor }} />
                 {briefDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
               </div>
               <button className={tradeBtnClass} onClick={handleTradeClick} disabled={executing || isNoTrade}>

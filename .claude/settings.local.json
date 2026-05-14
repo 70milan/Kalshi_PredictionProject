@@ -6,8 +6,18 @@
       "Read",
       "Write",
       "Bash(curl:*)",
-      "Bash(cd:*)"
+      "Bash(cd:*)",
+      "Bash(dir \"C:\\\\Data Engineering\\\\codeprep\\\\predection_project\")",
+      "Bash(python -c ' *)",
+      "Bash(python inference/build_position_ledger.py)",
+      "Bash(python inference/exit_evaluator.py)",
+      "Bash(Sort-Object LastWriteTime -Descending)",
+      "Bash(Select-Object -First 5)",
+      "Bash(Format-Table Name, LastWriteTime)",
+      "PowerShell(Import-Csv *)"
     ]
   },
+  "outputStyle": "default",
+  "prefersReducedMotion": false,
   "autoApprove": true
 }

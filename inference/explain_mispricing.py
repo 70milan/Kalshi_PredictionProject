@@ -210,7 +210,8 @@ RULES:
 - Respond ONLY with a JSON object containing exactly these keys:
   bull_case, bear_case, verdict, recommended_side, confidence_pct
 - recommended_side must be exactly the string "yes" or "no" (lowercase).
-- confidence_pct must be an integer 0-100 representing your confidence in the recommended_side."""
+- confidence_pct must be an integer 0-100 representing your confidence in the recommended_side.
+- verdict MUST start with one of: "Buy YES", "Buy NO", or "No Trade". Never write "Neutral", "N/A", or any other value."""
     try:
         response = groq_client.chat.completions.create(
             model=GROQ_MODEL,
@@ -328,7 +329,9 @@ def main():
         # EVIDENCE FOUND PATH: Synthesize intelligence via Gemini
         print(f"    > Synthesizing {len(context_docs)} signals via Gemini...")
         brief = generate_intelligence_brief(market, context_docs, window_type)
-        confidence = max([d['score'] for d in context_docs])
+        rag_score = max([d['score'] for d in context_docs])
+        llm_pct = float(brief.get("confidence_pct", 50)) / 100.0
+        confidence = round(0.6 * llm_pct + 0.4 * rag_score, 4)
         brief.update({
             "ticker":           market['ticker'],
             "title":            market['title'],

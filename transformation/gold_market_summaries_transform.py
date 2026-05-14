@@ -218,58 +218,66 @@ def generate_mispricing_scores(spark, kalshi_history_path, gdelt_summaries_path,
 
     return df_gold
 
+def run(spark):
+    """Runs the transform using a caller-managed SparkSession (no spark.stop)."""
+    kalshi_history = os.path.join(ROOT, "data", "silver", "kalshi_markets_history")
+    gdelt_summaries = os.path.join(ROOT, "data", "gold", "gdelt_summaries")
+    news_summaries = os.path.join(ROOT, "data", "gold", "news_summaries")
+    gold_path = os.path.join(ROOT, "data", "gold", "mispricing_scores")
+
+    mapping_file = setup_dummy_mapping_if_missing()
+
+    df_gold = generate_mispricing_scores(spark, kalshi_history, gdelt_summaries, news_summaries, mapping_file)
+    if df_gold is None:
+        return
+
+    # Cache before 3 uses (count + 2 writes) to avoid recomputing the join pipeline
+    df_gold.cache()
+    import shutil
+    row_count = df_gold.count()
+    print(f"[Gold Synthesizer] Computed {row_count} Market Scores. Writing to Delta...")
+
+    history_path = gold_path + "_history"
+
+    # Only wipe the Current snapshot so it starts clean at version 000
+    if os.path.exists(gold_path):
+        shutil.rmtree(gold_path)
+        print(f"[Gold Synthesizer] Cleared old Delta at {gold_path}")
+
+    # Save Current snapshot (fresh write — always version 000)
+    df_gold.write.format("delta").mode("overwrite").option("mergeSchema", "true").save(gold_path)
+
+    # Save History ledger (Append-only)
+    print(f"[Gold Synthesizer] Appending to History Ledger at {history_path}")
+    df_gold.write.format("delta").mode("append").option("mergeSchema", "true").save(history_path)
+
+    df_gold.unpersist()
+    print("[Gold Synthesizer] SUCCESS. Smart Scoring Ledger updated.")
+
+
 def main():
     print("[Gold Synthesizer] Initializing Smart Mispricing Engine v2 (Sentiment-Aware)...")
     builder = SparkSession.builder \
         .appName("PredictIQ_Gold_Mispricing_Scores") \
         .config("spark.driver.memory", "4g") \
+        .config("spark.sql.shuffle.partitions", "16") \
+        .config("spark.sql.adaptive.enabled", "true") \
+        .config("spark.sql.adaptive.coalescePartitions.enabled", "true") \
+        .config("spark.sql.adaptive.coalescePartitions.minPartitionSize", "32mb") \
+        .config("spark.sql.files.maxPartitionBytes", "128mb") \
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension") \
         .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog") \
         .config("spark.sql.parquet.enableVectorizedReader", "false")
 
     spark = configure_spark_with_delta_pip(builder).getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
-
-    kalshi_history = os.path.join(ROOT, "data", "silver", "kalshi_markets_history")
-    gdelt_summaries = os.path.join(ROOT, "data", "gold", "gdelt_summaries")
-    news_summaries = os.path.join(ROOT, "data", "gold", "news_summaries")
-    gold_path = os.path.join(ROOT, "data", "gold", "mispricing_scores")
-    
-    mapping_file = setup_dummy_mapping_if_missing()
-
     try:
-        df_gold = generate_mispricing_scores(spark, kalshi_history, gdelt_summaries, news_summaries, mapping_file)
-        if df_gold is None:
-            return
-            
-        import shutil
-        row_count = df_gold.count()
-        print(f"[Gold Synthesizer] Computed {row_count} Market Scores. Writing to Delta...")
-
-        history_path = gold_path + "_history"
-        
-        # Only wipe the Current snapshot so it starts clean at version 000
-        if os.path.exists(gold_path):
-            shutil.rmtree(gold_path)
-            print(f"[Gold Synthesizer] Cleared old Delta at {gold_path}")
-
-        # Save Current snapshot (fresh write — always version 000)
-        df_gold.write.format("delta").mode("overwrite").option("mergeSchema", "true").save(gold_path)
-
-        # Save History ledger (Append-only)
-        print(f"[Gold Synthesizer] Appending to History Ledger at {history_path}")
-        df_gold.write.format("delta").mode("append").option("mergeSchema", "true").save(history_path)
-        
-        print("[Gold Synthesizer] SUCCESS. Smart Scoring Ledger updated.")
-        
+        run(spark)
     except Exception as e:
         print(f"[Gold Synthesizer] FATAL ERROR: {str(e)}")
-        raise e
+        raise
     finally:
         spark.stop()
-
-if __name__ == "__main__":
-    main()
 
 
 if __name__ == "__main__":

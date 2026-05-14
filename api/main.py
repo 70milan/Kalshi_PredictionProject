@@ -40,6 +40,10 @@ PROJECT_ROOT          = os.path.dirname(os.path.dirname(os.path.abspath(__file__
 BRIEFS_PATH           = os.path.join(PROJECT_ROOT, "data", "gold", "intelligence_briefs")
 SIMULATED_TRADES_PATH = os.path.join(PROJECT_ROOT, "data", "gold", "simulated_trades.csv")
 BRONZE_LATEST_PATH    = os.path.join(PROJECT_ROOT, "data", "bronze", "kalshi_markets", "open", "latest.parquet")
+BRONZE_MARKETS_DIR    = os.path.join(PROJECT_ROOT, "data", "bronze", "kalshi_markets", "open")
+EXIT_SIGNALS_PATH     = os.path.join(PROJECT_ROOT, "data", "gold", "exit_signals")
+LEDGER_PATH           = os.path.join(PROJECT_ROOT, "data", "gold", "position_ledger.parquet")
+SETTLED_MARKETS_DIR   = os.path.join(PROJECT_ROOT, "data", "bronze", "kalshi_markets", "settled")
 KALSHI_BASE_URL       = "https://api.elections.kalshi.com/trade-api/v2"
 KALSHI_API_KEY        = os.getenv("KALSHI_API_KEY")
 KALSHI_API_SECRET     = os.getenv("KALSHI_API_SECRET", "")
@@ -47,6 +51,65 @@ SAFE_MODE             = os.getenv("SAFE_MODE", "true").lower() == "true"
 DEFAULT_BANKROLL      = float(os.getenv("BANKROLL_USD", "1000.0"))
 
 app = FastAPI(title="PredictIQ Intelligence API", version="2.0")
+
+
+# ─────────────────────────────────────────────
+# TITLE ENRICHMENT HELPER
+# ─────────────────────────────────────────────
+
+def _get_titles_from_history(tickers: list) -> dict:
+    """
+    Searches all markets_*.parquet files in Bronze to find titles for given tickers.
+    Used for expired/settled markets not in latest.parquet.
+    """
+    if not tickers:
+        return {}
+    
+    titles = {}
+    con = duckdb.connect()
+    try:
+        # 1. Search latest.parquet (fastest)
+        latest_path = BRONZE_LATEST_PATH.replace("\\", "/")
+        if os.path.exists(BRONZE_LATEST_PATH):
+            df_latest = con.execute(f"""
+                SELECT ticker, title FROM read_parquet('{latest_path}')
+                WHERE ticker IN ({','.join([f"'{t}'" for t in tickers])})
+            """).df()
+            titles.update(dict(zip(df_latest.ticker, df_latest.title)))
+        
+        # 2. Search history for remaining missing tickers
+        missing = [t for t in tickers if t not in titles]
+        if missing:
+            history_glob = os.path.join(BRONZE_MARKETS_DIR, "markets_*.parquet").replace("\\", "/")
+            # Use try-except block inside query for schema robustness
+            df_hist = con.execute(f"""
+                SELECT ticker, title FROM read_parquet('{history_glob}', union_by_name=true)
+                WHERE ticker IN ({','.join([f"'{t}'" for t in missing])})
+                QUALIFY ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY ticker) = 1
+            """).df()
+            titles.update(dict(zip(df_hist.ticker, df_hist.title)))
+            
+    except Exception as e:
+        print(f"[TITLE HELPER ERROR] {e}")
+    finally:
+        con.close()
+
+    # 3. Live API Fallback for absolute missing
+    final_missing = [t for t in tickers if t not in titles]
+    for t in final_missing:
+        try:
+            print(f"[TITLE FALLBACK] Fetching live title for {t}")
+            m_headers = _sign_kalshi_request("GET", f"/trade-api/v2/markets/{t}")
+            r = requests.get(f"{KALSHI_BASE_URL}/markets/{t}", headers=m_headers, timeout=5)
+            if r.status_code == 200:
+                m_title = r.json().get("market", {}).get("title")
+                if m_title:
+                    titles[t] = m_title
+        except Exception as e:
+            print(f"[TITLE FALLBACK ERROR] {t}: {e}")
+
+    return titles
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -138,6 +201,8 @@ def get_intelligence():
                       AND verdict NOT LIKE '%GHOST PUMP%'
                       AND verdict IS NOT NULL
                       AND verdict != ''
+                      AND LOWER(TRIM(verdict)) NOT IN ('neutral', 'n/a', 'no signal', 'insufficient data', 'no trade')
+                      AND LENGTH(TRIM(verdict)) > 5
                 ) b
                 JOIN read_parquet('{bronze_latest}') m ON b.ticker = m.ticker
                 WHERE b.rn = 1
@@ -172,6 +237,8 @@ def get_intelligence():
                       AND verdict NOT LIKE '%GHOST PUMP%'
                       AND verdict IS NOT NULL
                       AND verdict != ''
+                      AND LOWER(TRIM(verdict)) NOT IN ('neutral', 'n/a', 'no signal', 'insufficient data', 'no trade')
+                      AND LENGTH(TRIM(verdict)) > 5
                 )
                 WHERE rn = 1
                 ORDER BY mispricing_score DESC, confidence_score DESC
@@ -199,10 +266,8 @@ def get_intelligence():
     for _, row in df.iterrows():
         yes_bid    = float(row.get("current_odds", 0.5) or 0.5)
         confidence = float(row.get("confidence_score", 0.0) or 0.0)
-        kelly      = calculate_kelly(confidence, yes_bid, active_bankroll)
-        # Derive recommended_side from the verdict text.
+        # Derive recommended_side before Kelly so Kelly uses the correct side price.
         # The LLM prompt always instructs the model to write "Buy YES" or "Buy NO".
-        # This works for both old Parquet files (no recommended_side column) and new ones.
         verdict_lower = str(row.get("verdict", "")).lower()
         if "buy no" in verdict_lower:
             recommended_side = "no"
@@ -211,6 +276,25 @@ def get_intelligence():
         else:
             # Final fallback: negative odds_delta means market overpriced → buy NO
             recommended_side = "no" if float(row.get("odds_delta", 0) or 0) < -0.05 else "yes"
+
+        # Use live price if available (from latest.parquet JOIN), otherwise fall back to
+        # the stale brief price. Live price is more accurate for edge detection.
+        live_yes_bid_raw = row.get("live_yes_bid")
+        live_yes_bid = float(live_yes_bid_raw) if live_yes_bid_raw is not None and not pd.isna(live_yes_bid_raw) else None
+        current_yes_bid = live_yes_bid if live_yes_bid is not None else yes_bid
+
+        # Edge pre-check using live price: LLM confidence must beat market's implied probability
+        # for the recommended side, otherwise Kelly will be negative and the signal is noise.
+        market_prob = current_yes_bid if recommended_side == "yes" else (1.0 - current_yes_bid)
+        if confidence <= market_prob:
+            continue  # market already more confident than LLM — stale or no-edge brief
+
+        # Kelly must be computed on the actual side being purchased.
+        # For NO bets: price = 1 - yes_bid (how much NO costs per contract).
+        if recommended_side == "no":
+            kelly = calculate_kelly(confidence, 1.0 - current_yes_bid, active_bankroll)
+        else:
+            kelly = calculate_kelly(confidence, current_yes_bid, active_bankroll)
         briefs.append({
             "ticker":            str(row.get("ticker", "")),
             "title":             str(row.get("title", "")),
@@ -225,7 +309,7 @@ def get_intelligence():
             "ingested_at":       str(row.get("ingested_at", "")),
             "kelly":             kelly,
             "safe_mode":         SAFE_MODE,
-            "live_yes_bid":      float(row["live_yes_bid"]) if row.get("live_yes_bid") is not None and not pd.isna(row.get("live_yes_bid")) else None,
+            "live_yes_bid":      live_yes_bid,
             "live_yes_ask":      float(row["live_yes_ask"]) if row.get("live_yes_ask") is not None and not pd.isna(row.get("live_yes_ask")) else None,
         })
 
@@ -292,6 +376,107 @@ def get_intelligence_history(days: int = 7):
         "briefs": df.to_dict(orient="records"),
         "count":  len(df),
         "days":   days,
+    }
+
+
+# ─────────────────────────────────────────────
+# EXIT SIGNALS — read latest exit_evaluator output
+# ─────────────────────────────────────────────
+
+@app.get("/api/exits")
+def get_exit_signals():
+    """
+    Returns the latest exit recommendations for all open positions.
+    Generated by inference/exit_evaluator.py each ETL cycle.
+    Joins with current ledger entries to surface entry context.
+    """
+    if not os.path.exists(EXIT_SIGNALS_PATH):
+        return {"signals": [], "as_of": None}
+
+    files = [f for f in os.listdir(EXIT_SIGNALS_PATH) if f.endswith(".parquet")]
+    if not files:
+        return {"signals": [], "as_of": None}
+
+    latest_file = max(files, key=lambda f: os.path.getmtime(os.path.join(EXIT_SIGNALS_PATH, f)))
+    latest_path = os.path.join(EXIT_SIGNALS_PATH, latest_file).replace("\\", "/")
+    ledger_path = LEDGER_PATH.replace("\\", "/") if os.path.exists(LEDGER_PATH) else None
+
+    con = duckdb.connect()
+    try:
+        if ledger_path:
+            df = con.execute(f"""
+                SELECT
+                    s.*,
+                    l.entry_time, l.cost_basis, l.entry_confidence,
+                    l.entry_thesis, l.original_odds, l.brief_id
+                FROM read_parquet('{latest_path}') s
+                LEFT JOIN read_parquet('{ledger_path}') l
+                  ON s.ticker = l.ticker AND s.side = l.side
+                ORDER BY
+                    CASE WHEN s.action = 'HOLD' THEN 1 ELSE 0 END,
+                    s.urgency DESC,
+                    s.unrealized_pnl DESC
+            """).df()
+        else:
+            df = con.execute(f"""
+                SELECT * FROM read_parquet('{latest_path}')
+                ORDER BY
+                    CASE WHEN action = 'HOLD' THEN 1 ELSE 0 END,
+                    urgency DESC
+            """).df()
+        
+        # Enrich with titles from history
+        tickers = df["ticker"].unique().tolist()
+        title_map = _get_titles_from_history(tickers)
+        df["title"] = df["ticker"].map(title_map)
+        
+    except Exception as e:
+        print(f"[API EXITS ERROR] {e}")
+        return {"signals": [], "error": str(e)}
+    finally:
+        con.close()
+
+
+    mtime = os.path.getmtime(os.path.join(EXIT_SIGNALS_PATH, latest_file))
+    as_of = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
+
+    # Replace any NaN/None with JSON-safe values
+    df = df.where(pd.notna(df), None)
+
+    signals = df.to_dict(orient="records")
+
+    # Enrich with fresh Kalshi prices (the parquet may be minutes old — prices move).
+    # At most ~10 open positions so this is cheap: one API call per ticker.
+    tickers = list({s["ticker"] for s in signals if s.get("ticker")})
+    for ticker in tickers:
+        try:
+            mkt_headers = _sign_kalshi_request("GET", f"/trade-api/v2/markets/{ticker}")
+            r = requests.get(f"{KALSHI_BASE_URL}/markets/{ticker}", headers=mkt_headers, timeout=6)
+            if not r.ok:
+                continue
+            m = r.json().get("market", {})
+            yes_bid = float(m.get("yes_bid_dollars") or 0)
+            yes_ask = float(m.get("yes_ask_dollars") or 0)
+            for s in signals:
+                if s.get("ticker") != ticker:
+                    continue
+                side     = s.get("side", "yes")
+                current  = yes_bid if side == "yes" else (1.0 - yes_ask)
+                entry    = float(s.get("entry_price") or 0)
+                qty      = float(s.get("qty") or 0)
+                pnl_per  = current - entry
+                max_gain = 1.0 - entry
+                s["current_price"]  = round(current, 4)
+                s["unrealized_pnl"] = round(pnl_per * qty, 4)
+                s["capture_pct"]    = round(pnl_per / max_gain, 4) if max_gain > 0 else 0.0
+        except Exception:
+            pass  # stale parquet values remain if API call fails
+
+    return {
+        "signals":     signals,
+        "count":       len(signals),
+        "as_of":       as_of,
+        "actionable":  sum(1 for s in signals if s.get("action") != "HOLD"),
     }
 
 
@@ -431,6 +616,31 @@ def get_portfolio_positions():
     try:
         r = requests.get(f"{KALSHI_BASE_URL}/portfolio/positions", headers=headers, timeout=10)
         r.raise_for_status()
+        data = r.json()
+        
+        # Enrich with titles from full history
+        positions = data.get("market_positions", data.get("positions", []))
+        if positions:
+            tickers = [p["ticker"] for p in positions]
+            title_map = _get_titles_from_history(tickers)
+            for p in positions:
+                p["title"] = title_map.get(p["ticker"])
+        
+        return data
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+
+@app.get("/api/portfolio/fills")
+def get_portfolio_fills(limit: int = 200):
+    """Fetches fill history to compute cost basis for P&L."""
+    headers = _sign_kalshi_request("GET", "/trade-api/v2/portfolio/fills")
+    try:
+        r = requests.get(f"{KALSHI_BASE_URL}/portfolio/fills",
+                         params={"limit": limit},
+                         headers=headers, timeout=10)
+        r.raise_for_status()
         return r.json()
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
@@ -477,6 +687,170 @@ def get_portfolio_balance():
         return r.json()
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
+
+
+# ─────────────────────────────────────────────
+# BACKTEST ENDPOINT
+# ─────────────────────────────────────────────
+
+@app.get("/api/backtest")
+def get_backtest(days: int = 30, sim_bankroll: float = 1000.0):
+    """
+    Simulated backtest over all historical intelligence briefs.
+
+    For each unique brief (one per ticker, highest confidence):
+      - Joins against settled markets → WIN/LOSS outcome
+      - Falls back to latest.parquet for open positions → OPEN with paper P&L
+      - Computes Kelly-sized simulated P&L at a $1000 sim_bankroll
+
+    Returns per-brief rows + aggregate stats.
+    """
+    if not os.path.exists(BRIEFS_PATH):
+        return {"rows": [], "stats": {}}
+
+    con = duckdb.connect()
+    try:
+        parquet_glob   = os.path.join(BRIEFS_PATH, "*.parquet").replace("\\", "/")
+        bronze_latest  = BRONZE_LATEST_PATH.replace("\\", "/")
+        settled_glob   = os.path.join(SETTLED_MARKETS_DIR, "*.parquet").replace("\\", "/")
+
+        # Load all valid briefs — one per ticker (highest confidence)
+        briefs_df = con.execute(f"""
+            SELECT ticker, title, recommended_side, current_odds, confidence_score,
+                   verdict, ingested_at, mispricing_score
+            FROM (
+                SELECT *,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY ticker
+                           ORDER BY confidence_score DESC, ingested_at DESC
+                       ) AS rn
+                FROM read_parquet('{parquet_glob}', union_by_name=true)
+                WHERE CAST(ingested_at AS DATE) >= CURRENT_DATE - INTERVAL {days} DAY
+                  AND verdict NOT LIKE '%Error%'
+                  AND verdict IS NOT NULL AND verdict != ''
+                  AND recommended_side IN ('yes', 'no')
+            )
+            WHERE rn = 1
+        """).df()
+
+        if briefs_df.empty:
+            return {"rows": [], "stats": {"total": 0}}
+
+        tickers_sql = ",".join([f"'{t}'" for t in briefs_df["ticker"].tolist()])
+
+        # Settled outcomes
+        settled_df = pd.DataFrame(columns=["ticker", "result"])
+        settled_files = [f for f in os.listdir(SETTLED_MARKETS_DIR) if f.endswith(".parquet")] if os.path.exists(SETTLED_MARKETS_DIR) else []
+        if settled_files:
+            try:
+                settled_df = con.execute(f"""
+                    SELECT ticker, LOWER(result) AS result
+                    FROM read_parquet('{settled_glob}', union_by_name=true)
+                    WHERE ticker IN ({tickers_sql})
+                    QUALIFY ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY ingested_at DESC) = 1
+                """).df()
+            except Exception:
+                pass
+
+        # Live prices for open positions
+        live_df = pd.DataFrame(columns=["ticker", "live_yes_bid"])
+        if os.path.exists(BRONZE_LATEST_PATH):
+            try:
+                live_df = con.execute(f"""
+                    SELECT ticker, yes_bid_dollars AS live_yes_bid
+                    FROM read_parquet('{bronze_latest}')
+                    WHERE ticker IN ({tickers_sql})
+                """).df()
+            except Exception:
+                pass
+
+    except Exception as e:
+        print(f"[BACKTEST ERROR] {e}")
+        return {"rows": [], "stats": {}, "error": str(e)}
+    finally:
+        con.close()
+
+    settled_map = dict(zip(settled_df["ticker"], settled_df["result"])) if not settled_df.empty else {}
+    live_map    = dict(zip(live_df["ticker"], live_df["live_yes_bid"])) if not live_df.empty else {}
+
+    rows = []
+    for _, b in briefs_df.iterrows():
+        ticker     = b["ticker"]
+        side       = b["recommended_side"]          # "yes" or "no"
+        entry_yes  = float(b["current_odds"])        # YES bid when brief was written
+        confidence = float(b["confidence_score"])
+        entry_price = entry_yes if side == "yes" else (1.0 - entry_yes)  # cost of the contract we'd buy
+
+        # Outcome resolution
+        result = settled_map.get(ticker)   # "yes", "no", or None
+        live_yes = live_map.get(ticker)
+
+        if result is not None:
+            # Market has settled
+            won = (result == side)
+            outcome = "WIN" if won else "LOSS"
+            pnl_per = (1.0 - entry_price) if won else -entry_price
+            current_price = 1.0 if result == "yes" else 0.0  # final YES value
+        elif live_yes is not None:
+            outcome = "OPEN"
+            live_yes = float(live_yes)
+            current_price = live_yes if side == "yes" else (1.0 - live_yes)
+            pnl_per = current_price - entry_price
+        else:
+            outcome = "UNKNOWN"
+            current_price = None
+            pnl_per = None
+
+        # Kelly-sized simulated P&L
+        sim_pnl = None
+        kelly_info = calculate_kelly(confidence, entry_price, sim_bankroll)
+        if pnl_per is not None and kelly_info["edge_detected"]:
+            contracts = int(kelly_info["suggested_bet_usd"] / entry_price) if entry_price > 0 else 0
+            sim_pnl = round(contracts * pnl_per, 2)
+        elif pnl_per is not None:
+            # No edge per Kelly, but still show flat-$10 simulation so the row has data
+            contracts = int(10.0 / entry_price) if entry_price > 0 else 0
+            sim_pnl = round(contracts * pnl_per, 2)
+
+        rows.append({
+            "ticker":          ticker,
+            "title":           str(b.get("title", "")),
+            "brief_date":      str(b["ingested_at"])[:10],
+            "recommended_side": side,
+            "entry_yes_bid":   round(entry_yes, 4),
+            "entry_price":     round(entry_price, 4),
+            "confidence":      round(confidence, 4),
+            "outcome":         outcome,
+            "current_price":   round(current_price, 4) if current_price is not None else None,
+            "pnl_per_contract": round(pnl_per, 4) if pnl_per is not None else None,
+            "kelly_edge":      kelly_info["edge_detected"],
+            "kelly_fraction":  kelly_info["kelly_fraction"],
+            "sim_pnl":         sim_pnl,
+            "verdict":         str(b.get("verdict", ""))[:120],
+        })
+
+    # Aggregate stats
+    resolved = [r for r in rows if r["outcome"] in ("WIN", "LOSS")]
+    wins     = [r for r in resolved if r["outcome"] == "WIN"]
+    open_pos = [r for r in rows if r["outcome"] == "OPEN"]
+    with_pnl = [r for r in rows if r["sim_pnl"] is not None]
+
+    stats = {
+        "total":            len(rows),
+        "resolved":         len(resolved),
+        "wins":             len(wins),
+        "losses":           len(resolved) - len(wins),
+        "open":             len(open_pos),
+        "unknown":          len(rows) - len(resolved) - len(open_pos),
+        "hit_rate":         round(len(wins) / len(resolved), 4) if resolved else None,
+        "sim_total_pnl":    round(sum(r["sim_pnl"] for r in with_pnl), 2),
+        "sim_open_pnl":     round(sum(r["sim_pnl"] for r in open_pos if r["sim_pnl"] is not None), 2),
+        "sim_resolved_pnl": round(sum(r["sim_pnl"] for r in resolved if r["sim_pnl"] is not None), 2),
+        "sim_bankroll":     sim_bankroll,
+        "days":             days,
+    }
+
+    return {"rows": sorted(rows, key=lambda r: r["brief_date"], reverse=True), "stats": stats}
 
 
 # ─────────────────────────────────────────────

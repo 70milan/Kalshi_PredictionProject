@@ -184,12 +184,50 @@ def write_history(spark, df, silver_history):
     df.write.format("delta").mode("append").option("mergeSchema", "true").save(silver_history)
 
 
+def run(spark):
+    """Runs the transform using a caller-managed SparkSession (no spark.stop)."""
+    bronze_base = os.path.join(ROOT, "data", "bronze", "kalshi_markets")
+    silver_current = os.path.join(ROOT, "data", "silver", "kalshi_markets_current")
+    silver_history = os.path.join(ROOT, "data", "silver", "kalshi_markets_history")
+
+    # Step 1: Get watermark (drive off the History table to ensure we capture all appends)
+    watermark = get_watermark(spark, silver_history)
+    print(f"[Silver Kalshi] Operational Watermark calculated: {watermark}")
+
+    # Step 2: Read incremental data (per-subdirectory to avoid type conflicts)
+    print("[Silver Kalshi] Loading Bronze subdirectories with type normalization...")
+    df = read_bronze_incremental(spark, bronze_base, watermark)
+
+    # Exit early if no new data prevents empty append operations
+    if df.isEmpty():
+        print("[Silver Kalshi] Pipeline Skipped: No new data found beyond watermark.")
+        return
+
+    # Step 3: Transform
+    df_transformed = transform(df)
+
+    # Step 4: Write Current
+    print(f"[Silver Kalshi] Standardizing and Upserting Current Table...")
+    write_current(spark, df_transformed, silver_current)
+
+    # Step 5: Write History
+    print(f"[Silver Kalshi] Appending safely to History Table...")
+    write_history(spark, df_transformed, silver_history)
+
+    print("[Silver Kalshi] Run completely successful. 100% Data Integrity Ensured.")
+
+
 def main():
     print("[Silver Kalshi] Initializing PySpark Session...")
     ivy_dir = os.environ.get("IVY_PACKAGE_DIR", "")
     builder = SparkSession.builder \
         .appName("PredictIQ_Silver_Kalshi") \
         .config("spark.driver.memory", "4g") \
+        .config("spark.sql.shuffle.partitions", "16") \
+        .config("spark.sql.adaptive.enabled", "true") \
+        .config("spark.sql.adaptive.coalescePartitions.enabled", "true") \
+        .config("spark.sql.adaptive.coalescePartitions.minPartitionSize", "32mb") \
+        .config("spark.sql.files.maxPartitionBytes", "128mb") \
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension") \
         .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog") \
         .config("spark.databricks.delta.schema.autoMerge.enabled", "true") \
@@ -199,41 +237,11 @@ def main():
 
     spark = configure_spark_with_delta_pip(builder).getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
-
-    bronze_base = os.path.join(ROOT, "data", "bronze", "kalshi_markets")
-    silver_current = os.path.join(ROOT, "data", "silver", "kalshi_markets_current")
-    silver_history = os.path.join(ROOT, "data", "silver", "kalshi_markets_history")
-
     try:
-        # Step 1: Get watermark (drive off the History table to ensure we capture all appends)
-        watermark = get_watermark(spark, silver_history)
-        print(f"[Silver Kalshi] Operational Watermark calculated: {watermark}")
-
-        # Step 2: Read incremental data (per-subdirectory to avoid type conflicts)
-        print("[Silver Kalshi] Loading Bronze subdirectories with type normalization...")
-        df = read_bronze_incremental(spark, bronze_base, watermark)
-        
-        # Exit early if no new data prevents empty append operations
-        if df.isEmpty():
-            print("[Silver Kalshi] Pipeline Skipped: No new data found beyond watermark.")
-            return
-
-        # Step 3: Transform
-        df_transformed = transform(df)
-        
-        # Step 4: Write Current
-        print(f"[Silver Kalshi] Standardizing and Upserting Current Table...")
-        write_current(spark, df_transformed, silver_current)
-
-        # Step 5: Write History
-        print(f"[Silver Kalshi] Appending safely to History Table...")
-        write_history(spark, df_transformed, silver_history)
-
-        print("[Silver Kalshi] Run completely successful. 100% Data Integrity Ensured.")
-        
+        run(spark)
     except Exception as e:
         print(f"[Silver Kalshi] FATAL ERROR: {str(e)}")
-        raise e
+        raise
     finally:
         spark.stop()
 

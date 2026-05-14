@@ -221,26 +221,8 @@ def enrich_on_driver(pdf):
 # MAIN
 # ─────────────────────────────────────────────
 
-def main():
-    print("[Silver News] Initializing PySpark Session...")
-
-    ivy_dir = os.environ.get("IVY_PACKAGE_DIR", "")
-    builder = (
-        SparkSession.builder
-        .appName("PredictIQ_Silver_News")
-        .config("spark.driver.memory", "4g")
-        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
-        .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
-        .config("spark.sql.parquet.enableVectorizedReader", "false")
-        .config("spark.sql.execution.arrow.pyspark.enabled", "false")
-    )
-    if ivy_dir:
-        builder = builder.config("spark.jars.ivy", ivy_dir)
-
-    spark = configure_spark_with_delta_pip(builder).getOrCreate()
-    spark.sparkContext.setLogLevel("ERROR")
-
-    # Discover Bronze files
+def run(spark):
+    """Runs the transform using a caller-managed SparkSession (no spark.stop)."""
     news_sources = ["bbc", "cnn", "foxnews", "nypost", "nyt", "thehindu"]
     silver_path = os.path.join(ROOT, "data", "silver", "news_articles_enriched")
     tmp_json_dir = os.path.join(ROOT, "data", "silver", "_tmp_news_json")
@@ -319,6 +301,28 @@ def main():
                 shutil.rmtree(tmp_json_dir)
             except Exception:
                 pass
+
+
+def main():
+    print("[Silver News] Initializing PySpark Session...")
+    ivy_dir = os.environ.get("IVY_PACKAGE_DIR", "")
+    builder = (
+        SparkSession.builder
+        .appName("PredictIQ_Silver_News")
+        .config("spark.driver.memory", "4g")
+        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+        .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
+        .config("spark.sql.parquet.enableVectorizedReader", "false")
+        .config("spark.sql.execution.arrow.pyspark.enabled", "false")
+    )
+    if ivy_dir:
+        builder = builder.config("spark.jars.ivy", ivy_dir)
+
+    spark = configure_spark_with_delta_pip(builder).getOrCreate()
+    spark.sparkContext.setLogLevel("ERROR")
+    try:
+        run(spark)
+    finally:
         spark.stop()
 
 
