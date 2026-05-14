@@ -251,8 +251,11 @@ export default function App() {
       {showPositions && (
         <div className="modal-backdrop" onClick={() => setShowPositions(false)}>
           <div className="modal-card" style={{ maxWidth: '860px' }} onClick={e => e.stopPropagation()}>
-            <button className="modal-close" onClick={() => setShowPositions(false)}>×</button>
-            <div style={{ padding: '1.2rem 1.5rem 0.5rem' }}>
+            <div className="modal-close-bar">
+              <button className="modal-close" onClick={() => setShowPositions(false)}>×</button>
+            </div>
+            <div className="modal-body">
+            <div style={{ padding: '0.5rem 1.5rem 0.5rem' }}>
               <div className="section-heading" style={{ marginBottom: '0.75rem' }}>
                 Open Positions ({orders.length})
               </div>
@@ -329,6 +332,7 @@ export default function App() {
                 );
               })()}
             </div>
+            </div>{/* end modal-body */}
           </div>
         </div>
       )}
@@ -336,9 +340,12 @@ export default function App() {
       {/* BACKTEST OVERLAY */}
       {showBacktest && (
         <div className="modal-backdrop" onClick={() => setShowBacktest(false)}>
-          <div className="modal-card" style={{ maxWidth: '1100px', maxHeight: '85vh', overflowY: 'auto' }} onClick={e => e.stopPropagation()}>
-            <button className="modal-close" onClick={() => setShowBacktest(false)}>×</button>
-            <div style={{ padding: '1.2rem 1.5rem 0.5rem' }}>
+          <div className="modal-card" style={{ maxWidth: '1100px' }} onClick={e => e.stopPropagation()}>
+            <div className="modal-close-bar">
+              <button className="modal-close" onClick={() => setShowBacktest(false)}>×</button>
+            </div>
+            <div className="modal-body">
+            <div style={{ padding: '0.5rem 1.5rem 0.5rem' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
                 <div className="section-heading" style={{ marginBottom: 0 }}>Signal Backtest · Last 30 Days</div>
                 <button
@@ -450,6 +457,7 @@ export default function App() {
                 );
               })() : null}
             </div>
+            </div>{/* end modal-body */}
           </div>
         </div>
       )}
@@ -458,8 +466,11 @@ export default function App() {
       {showExits && (
         <div className="modal-backdrop" onClick={() => setShowExits(false)}>
           <div className="modal-card" style={{ maxWidth: '860px' }} onClick={e => e.stopPropagation()}>
-            <button className="modal-close" onClick={() => setShowExits(false)}>×</button>
-            <div style={{ padding: '1.2rem 1.5rem 0.5rem' }}>
+            <div className="modal-close-bar">
+              <button className="modal-close" onClick={() => setShowExits(false)}>×</button>
+            </div>
+            <div className="modal-body">
+            <div style={{ padding: '0.5rem 1.5rem 0.5rem' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.8rem', marginBottom: '0.75rem' }}>
                 <div className="section-heading" style={{ marginBottom: 0 }}>
                   Exit Recommendations ({exitSignals.length})
@@ -560,6 +571,7 @@ export default function App() {
                 })}
               </div>
             </div>
+            </div>{/* end modal-body */}
           </div>
         </div>
       )}

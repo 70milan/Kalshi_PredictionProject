@@ -152,10 +152,11 @@ RULES:
 - Do NOT repeat volume numbers. Explain the news fundamentals.
 - STRICT RULE: Never recommend 'Buy YES' on a speculative basis just because the odds are low. If there is NO CONCRETE EVIDENCE in the text supporting the outcome, you MUST recommend 'Buy NO' or 'No Trade'. Do not act as a pundit.
 - Be highly critical. If news is vague, recommend 'No Trade'.
-- Respond ONLY with a JSON object: bull_case, bear_case, verdict, recommended_side, confidence_pct.
+- Respond ONLY with a JSON object: bull_case, bear_case, verdict, recommended_side, confidence_pct, decision_reason.
 - recommended_side must be exactly "yes" or "no" (lowercase).
 - confidence_pct must be an integer 0-100.
-- verdict MUST start with one of: "Buy YES", "Buy NO", or "No Trade". Never write "Neutral", "N/A", or any other value."""
+- verdict MUST start with one of: "Buy YES", "Buy NO", or "No Trade". Never write "Neutral", "N/A", or any other value.
+- decision_reason: 1-2 sentences explaining exactly why the recommended side was chosen over the other. Reference the single most important piece of evidence that tipped the scale. Be specific, not generic."""
 
     try:
         response = groq_client.chat.completions.create(
@@ -259,6 +260,7 @@ def main():
             "bull_case":        _flatten_llm_field(brief.get("bull_case", "")),
             "bear_case":        _flatten_llm_field(brief.get("bear_case", "")),
             "verdict":          _flatten_llm_field(brief.get("verdict", "")),
+            "decision_reason":  _flatten_llm_field(brief.get("decision_reason", "")),
             "recommended_side": recommended,
             "current_odds":     current_odds,
             "odds_delta":       odds_delta,

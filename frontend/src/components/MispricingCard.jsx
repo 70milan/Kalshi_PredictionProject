@@ -111,6 +111,9 @@ export default function MispricingCard({ brief, bankroll, onTradeResult, onTrade
     const parsed = JSON.parse(verdictText);
     verdictText = parsed.analysis || parsed.verdict || parsed.prediction || JSON.stringify(parsed);
   } catch (_) {}
+  // Strip the leading directive ("Buy NO", "Buy YES", "No Trade") so it doesn't duplicate
+  // the bolded prefix we render ourselves
+  verdictText = verdictText.replace(/^(Buy\s+(YES|NO)|No\s+Trade)[.\s]*/i, '').trim();
 
   const tradeBtnClass = `trade-btn ${
     executing ? 'executing' :
@@ -141,25 +144,26 @@ export default function MispricingCard({ brief, bankroll, onTradeResult, onTrade
     safeMode  ? `Sim ${(brief.recommended_side ?? 'yes').toUpperCase()}` :
                 `Buy ${(brief.recommended_side ?? 'yes').toUpperCase()}`;
 
+  const verdictPrefix = isNoTrade ? 'No Trade. ' : `Buy ${(brief.recommended_side ?? 'yes').toUpperCase()}. `;
+
   return (
     <>
       {/* ── COMPACT CARD (always in grid) ── */}
       <div className="brief-card" onClick={() => setIsExpanded(true)} style={{ cursor: 'pointer' }}>
         <div className="card-header">
-          <div style={{ minWidth: 0 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <div className="card-ticker">{brief.ticker}</div>
-            </div>
-            <div className="card-title">{brief.title}</div>
-          </div>
-          <div className="card-badges" style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px' }}>
-            <div style={{ display: 'flex', gap: '8px' }}>
-              <div className={`delta-badge ${brief.odds_delta >= 0 ? 'delta-up' : 'delta-down'}`}>
-                {deltaSign}{deltaAbs}%
-              </div>
-              <div className="odds-badge">{oddsDisplay} YES</div>
-            </div>
-            {(brief.live_yes_bid != null && brief.live_yes_ask != null) && (() => {
+          {/* Row 1: ticker */}
+          <span className="card-ticker">{brief.ticker}</span>
+
+          {/* Row 2: title */}
+          <div className="card-title">{brief.title}</div>
+
+          {/* Row 3: delta · YES price · live spread */}
+          <div className="ch-price-row">
+            <span className={`ch-side-pill ${brief.recommended_side === 'yes' ? 'yes' : 'no'}`}>
+              {deltaSign}{deltaAbs}%
+            </span>
+            <span className="ch-price">{oddsDisplay}</span>
+            {brief.live_yes_bid != null && brief.live_yes_ask != null && (() => {
               const side = brief.recommended_side ?? 'yes';
               const bid = side === 'no'
                 ? Math.round((1 - brief.live_yes_ask) * 100)
@@ -168,16 +172,13 @@ export default function MispricingCard({ brief, bankroll, onTradeResult, onTrade
                 ? Math.round((1 - brief.live_yes_bid) * 100)
                 : Math.round(brief.live_yes_ask * 100);
               return (
-                <div style={{ fontSize: '0.75rem', color: '#9ca3af', fontWeight: '500' }}>
-                  Live {side.toUpperCase()}: {bid}¢ / {ask}¢
-                </div>
+                <span className="ch-live">Live {bid} / {ask}¢</span>
               );
             })()}
           </div>
         </div>
 
         <div className="card-body">
-          <div className="verdict-block">{truncate(verdictText, 100)}</div>
           <div className="kelly-section">
             <div className="kelly-info">
               <div className="kelly-label">Kelly Bet</div>
@@ -207,23 +208,20 @@ export default function MispricingCard({ brief, bankroll, onTradeResult, onTrade
         {isExpanded && createPortal(
         <div className="modal-backdrop" onClick={() => setIsExpanded(false)}>
           <div className="modal-card" onClick={(e) => e.stopPropagation()}>
-            <button className="modal-close" onClick={() => setIsExpanded(false)}>×</button>
+            <div className="modal-close-bar">
+              <button className="modal-close" onClick={() => setIsExpanded(false)}>×</button>
+            </div>
+            <div className="modal-body">
 
-            <div className="card-header" style={{ borderRadius: '12px 12px 0 0', paddingRight: '2.5rem' }}>
-              <div style={{ minWidth: 0 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <div className="card-ticker">{brief.ticker}</div>
-                </div>
-                <div className="card-title" style={{ WebkitLineClamp: 'unset', display: 'block' }}>{brief.title}</div>
-              </div>
-              <div className="card-badges" style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px' }}>
-                <div style={{ display: 'flex', gap: '8px' }}>
-                  <div className={`delta-badge ${brief.odds_delta >= 0 ? 'delta-up' : 'delta-down'}`}>
-                    {deltaSign}{deltaAbs}%
-                  </div>
-                  <div className="odds-badge">{oddsDisplay} YES</div>
-                </div>
-                {(brief.live_yes_bid != null && brief.live_yes_ask != null) && (() => {
+            <div className="card-header" style={{ borderRadius: 0 }}>
+              <span className="card-ticker">{brief.ticker}</span>
+              <div className="card-title" style={{ WebkitLineClamp: 'unset', display: 'block' }}>{brief.title}</div>
+              <div className="ch-price-row">
+                <span className={`ch-side-pill ${brief.recommended_side === 'yes' ? 'yes' : 'no'}`}>
+                  {deltaSign}{deltaAbs}%
+                </span>
+                <span className="ch-price">{oddsDisplay}</span>
+                {brief.live_yes_bid != null && brief.live_yes_ask != null && (() => {
                   const side = brief.recommended_side ?? 'yes';
                   const bid = side === 'no'
                     ? Math.round((1 - brief.live_yes_ask) * 100)
@@ -231,33 +229,94 @@ export default function MispricingCard({ brief, bankroll, onTradeResult, onTrade
                   const ask = side === 'no'
                     ? Math.round((1 - brief.live_yes_bid) * 100)
                     : Math.round(brief.live_yes_bid * 100);
-                  return (
-                    <div style={{ fontSize: '0.75rem', color: '#9ca3af', fontWeight: '500' }}>
-                      Live {side.toUpperCase()}: {bid}¢ / {ask}¢
-                    </div>
-                  );
+                  return <span className="ch-live">Live {bid} / {ask}¢</span>;
                 })()}
               </div>
             </div>
 
-            <div className="card-body" style={{ gap: '0.75rem' }}>
-              <div className="analysis-row">
+            <div className="card-body" style={{ gap: '0.65rem' }}>
+
+              {/* ── ① SIGNALS ── */}
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                {[
+                  { label: 'Spike',     value: brief.max_spike_multiplier != null ? `${Number(brief.max_spike_multiplier).toFixed(1)}×` : null },
+                  { label: 'Sentiment', value: brief.sentiment_signal != null ? Number(brief.sentiment_signal).toFixed(2) : null },
+                  { label: 'Δ Odds',    value: `${brief.odds_delta >= 0 ? '+' : ''}${(brief.odds_delta * 100).toFixed(1)}%` },
+                  { label: 'Score',     value: brief.mispricing_score != null ? Math.round(brief.mispricing_score) : null },
+                  { label: 'Conf',      value: `${confidencePct}%` },
+                ].filter(p => p.value != null).map(({ label, value }) => (
+                  <span key={label} style={{
+                    fontSize: '0.62rem',
+                    fontFamily: 'JetBrains Mono, monospace',
+                    padding: '2px 8px',
+                    borderRadius: '4px',
+                    background: 'var(--bg-surface)',
+                    border: '1px solid var(--border)',
+                    color: 'var(--text-secondary)',
+                  }}>
+                    <span style={{ color: 'var(--text-muted)', marginRight: '4px' }}>{label}</span>{value}
+                  </span>
+                ))}
+              </div>
+
+              {/* ── ② DECISION REASON ── */}
+              {(() => {
+                const side = brief.recommended_side ?? 'no';
+                const accentColor = side === 'yes' ? 'var(--green)' : 'var(--red)';
+
+                // Prefer the LLM-generated decision_reason (available on new briefs).
+                // For old briefs, build a factual one-liner from the raw signal values
+                // rather than echoing the bear/bull narrative.
+                let reasonText = brief.decision_reason || '';
+                if (!reasonText) {
+                  const parts = [];
+                  const sent = brief.sentiment_signal;
+                  if (sent != null) {
+                    const sentLabel = sent < -0.3 ? 'strongly negative' : sent > 0.3 ? 'strongly positive' : 'neutral';
+                    parts.push(`Sentiment ${Number(sent).toFixed(2)} (${sentLabel})`);
+                  }
+                  const spike = brief.max_spike_multiplier;
+                  if (spike != null && spike > 1) parts.push(`news spike ${Number(spike).toFixed(1)}×`);
+                  const delta = brief.odds_delta;
+                  if (delta != null) parts.push(`odds drift ${delta >= 0 ? '+' : ''}${(delta * 100).toFixed(1)}%`);
+                  reasonText = parts.length
+                    ? `Signals: ${parts.join(', ')}. Detailed reasoning available after next inference cycle.`
+                    : '';
+                }
+
+                if (!reasonText) return null;
+                return (
+                  <div style={{
+                    padding: '0.6rem 0.85rem',
+                    borderLeft: `3px solid ${accentColor}`,
+                    background: 'var(--bg-surface)',
+                    borderRadius: '0 6px 6px 0',
+                    fontSize: '0.74rem',
+                    lineHeight: 1.55,
+                    color: 'var(--text-primary)',
+                  }}>
+                    <div style={{ fontSize: '0.55rem', textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', marginBottom: '4px' }}>
+                      Why {side.toUpperCase()}
+                    </div>
+                    {reasonText}
+                  </div>
+                );
+              })()}
+
+              {/* ── ③ CASES (de-emphasised) ── */}
+              <div className="analysis-row" style={{ opacity: 0.75 }}>
                 <div className="analysis-block bull">
                   <div className="analysis-label">Bull Case</div>
-                  <div className="analysis-text" style={{ WebkitLineClamp: 'unset', display: 'block', overflow: 'visible' }}>
+                  <div className="analysis-text" style={{ WebkitLineClamp: 'unset', display: 'block', overflow: 'visible', fontSize: '0.68rem' }}>
                     {brief.bull_case}
                   </div>
                 </div>
                 <div className="analysis-block bear">
                   <div className="analysis-label">Bear Case</div>
-                  <div className="analysis-text" style={{ WebkitLineClamp: 'unset', display: 'block', overflow: 'visible' }}>
+                  <div className="analysis-text" style={{ WebkitLineClamp: 'unset', display: 'block', overflow: 'visible', fontSize: '0.68rem' }}>
                     {brief.bear_case}
                   </div>
                 </div>
-              </div>
-
-              <div className="verdict-block" style={{ WebkitLineClamp: 'unset', display: 'block', overflow: 'visible' }}>
-                {verdictText}
               </div>
 
               <div className="kelly-section">
@@ -291,6 +350,8 @@ export default function MispricingCard({ brief, bankroll, onTradeResult, onTrade
                              `Execute ${(brief.recommended_side ?? 'yes').toUpperCase()}`}
               </button>
             </div>
+
+            </div>{/* end modal-body */}
           </div>
         </div>,
         document.body
