@@ -16,41 +16,46 @@ def generate_news_summaries(spark, silver_news_path):
     if not os.path.exists(os.path.join(silver_news_path, "_delta_log")):
         return None
 
-    # Hard 90-day cap at read time — velocity windows never exceed 90 days
+    # Split computation to avoid running range windows over 90 days of articles:
+    #   Pass A: vol_90d = GROUP BY count over 90 days (no range window, no sort)
+    #   Pass B: vol_15m, vol_24h, sent windows = range windows on last 24h only
+    # News has 6 sources so the broadcast join is trivial.
+
     cutoff_90d = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
-    print(f"[Gold News] 90-day read window applied. Cutoff: {cutoff_90d[:19]}")
+    cutoff_24h = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    print(f"[Gold News] 90-day baseline cutoff: {cutoff_90d[:19]}")
+    print(f"[Gold News] 24h window cutoff:      {cutoff_24h[:19]}")
 
-    # 1. Load Silver News
-    df = spark.read.format("delta").load(silver_news_path) \
-        .filter(F.col("ingested_at").cast("string") >= cutoff_90d)
-    
-    # Filter rows with missing published_at (now fixed in silver)
-    df = df.filter(F.col("published_at").isNotNull())
-    
-    # Cast to timestamp then to long for windowing
-    df = df.withColumn("ts", F.col("published_at").cast("timestamp").cast("long"))
+    def load_news(cutoff):
+        return spark.read.format("delta").load(silver_news_path) \
+            .filter(F.col("ingested_at").cast("string") >= cutoff) \
+            .filter(F.col("published_at").isNotNull()) \
+            .withColumn("ts", F.col("published_at").cast("timestamp").cast("long"))
 
-    # 2. Define Windows
+    # Pass A — 90-day baseline (simple aggregation, no window sort)
+    df_baseline = load_news(cutoff_90d).groupBy("source").agg(
+        F.count("link").alias("vol_90d")
+    )
+    df_baseline.cache()
+    df_baseline.count()
+
+    # Pass B — 24h range windows (small slice)
+    df_24h = load_news(cutoff_24h)
     win_15m = Window.partitionBy("source").orderBy("ts").rangeBetween(-900, 0)
     win_24h = Window.partitionBy("source").orderBy("ts").rangeBetween(-86400, 0)
-    win_90d = Window.partitionBy("source").orderBy("ts").rangeBetween(-7776000, 0)
 
-    # 3. Calculate Signals
-    df_summary = df \
-        .withColumn("vol_15m", F.count("link").over(win_15m)) \
-        .withColumn("vol_24h", F.count("link").over(win_24h)) \
-        .withColumn("vol_90d", F.count("link").over(win_90d)) \
+    df_summary = df_24h \
+        .withColumn("vol_15m",  F.count("link").over(win_15m)) \
+        .withColumn("vol_24h",  F.count("link").over(win_24h)) \
         .withColumn("sent_15m", F.avg("sentiment_score").over(win_15m)) \
         .withColumn("sent_24h", F.avg("sentiment_score").over(win_24h))
 
-    # 4. Final Aggregation per Source
     df_latest = df_summary.groupBy("source").agg(
         F.max("vol_15m").alias("vol_15m"),
         F.max("vol_24h").alias("vol_24h"),
-        F.max("vol_90d").alias("vol_90d"),
         F.last("sent_15m").alias("sent_15m"),
-        F.last("sent_24h").alias("sent_24h")
-    )
+        F.last("sent_24h").alias("sent_24h"),
+    ).join(F.broadcast(df_baseline), on="source", how="left").fillna({"vol_90d": 0})
 
     # 5. Spike Detection Signal (90 days baseline: 90*24*4 = 8640)
     # Require at least 100 baseline articles before trusting the spike signal (news sources

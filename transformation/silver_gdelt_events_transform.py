@@ -69,30 +69,28 @@ def discover_bronze_files(bronze_base, watermark):
 
 def load_bronze_chunked(spark, bronze_files, watermark):
     """
-    Reads Bronze parquet files one at a time using Spark and filters by watermark
-    BEFORE unioning. Returns a Spark DataFrame of only new rows, or None if empty.
+    Reads all new Bronze files in one Spark read call, then filters by watermark.
+    One scan node + one filter is orders of magnitude faster than per-file reads
+    with individual .limit(1).count() checks (which create N separate Spark jobs).
     """
-    filtered_dfs = []
-    for fpath in bronze_files:
-        try:
-            df = spark.read.option("mergeSchema", "true").parquet(fpath)
-        except Exception as e:
-            print(f"[Silver GDELT Events] WARNING: Could not read {fpath}: {e}")
-            continue
-
-        if watermark:
-            df = df.filter(F.col("ingested_at").cast("string") > watermark)
-
-        if df.limit(1).count() > 0:
-            filtered_dfs.append(df)
-
-    if not filtered_dfs:
+    if not bronze_files:
+        return None
+    try:
+        df = spark.read.option("mergeSchema", "true").parquet(*bronze_files)
+    except Exception as e:
+        print(f"[Silver GDELT Events] WARNING: Could not batch-read Bronze files: {e}")
         return None
 
-    result = filtered_dfs[0]
-    for df in filtered_dfs[1:]:
-        result = result.unionByName(df, allowMissingColumns=True)
-    return result
+    if watermark:
+        # Compare as real timestamps — bronze uses ISO 'T' separator, the
+        # silver-derived watermark uses a space. String comparison sorted 'T'
+        # above ' ', so every row re-passed the filter every cycle.
+        df = df.filter(F.to_timestamp(F.col("ingested_at")) > F.to_timestamp(F.lit(watermark)))
+
+    if df.limit(1).count() == 0:
+        return None
+
+    return df
 
 
 def load_references(spark, reference_dir):
@@ -230,9 +228,9 @@ def is_batch_already_written(spark, silver_history_path, batch_min_ingested_at):
 def write_history(df_spark, silver_history_path):
     """
     Append-only write to the history Delta table.
-    Preserves full audit trail of every ingestion batch.
+    coalesce(1) writes one file per cycle — prevents small-file accumulation.
     """
-    df_spark.write.format("delta").option("mergeSchema", "true").mode("append").save(silver_history_path)
+    df_spark.coalesce(1).write.format("delta").option("mergeSchema", "true").mode("append").save(silver_history_path)
 
 
 def merge_current(spark, df_spark, silver_current_path):

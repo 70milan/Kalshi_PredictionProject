@@ -209,7 +209,7 @@ def run_etl_cycle():
         # --- Phase 2: Vector Sync ---
         print("\n[Phase 2/3] Vector Bridge Synchronization")
         print("-" * 40)
-        run_script(VECTOR_SYNC_SCRIPT, timeout_seconds=1200)
+        run_script(VECTOR_SYNC_SCRIPT, timeout_seconds=2400)
 
         # --- Phase 3: Inference Engine ---
         print("\n[Phase 3/3] AI Inference & Mispricing Detection")

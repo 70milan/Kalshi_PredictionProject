@@ -21,52 +21,64 @@ def generate_gdelt_summaries(spark, gkg_path, events_path):
         print("[Gold GDELT] No silver history found. Exiting.")
         return None
 
-    # Hard 90-day cap at read time — velocity windows never exceed 90 days,
-    # so reading older data wastes compute with zero signal benefit
+    # Split computation into two passes to avoid running range windows over 90 days
+    # of data (which produces 300K+ partitioned rows in the window sort):
+    #   Pass A: vol_90d = simple GROUP BY count over 90 days (no range window, no sort)
+    #   Pass B: vol_15m, vol_24h, tone windows = range windows on last 24h only (tiny slice)
+    # Join A + B at entity level. Same result, ~10x less data in the expensive window pass.
+
     cutoff_90d = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
-    print(f"[Gold GDELT] 90-day read window applied. Cutoff: {cutoff_90d[:19]}")
+    cutoff_24h = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    print(f"[Gold GDELT] 90-day baseline cutoff: {cutoff_90d[:19]}")
+    print(f"[Gold GDELT] 24h window cutoff:      {cutoff_24h[:19]}")
 
-    # 1. Load and Standardize GKG Entities
-    df_gkg = spark.read.format("delta").load(gkg_path) \
-        .filter(F.col("ingested_at").cast("string") >= cutoff_90d) \
-        .select("ingested_at", "raw_tone_stats", "persons_array", "themes_array", "orgs_array", "locs_array") \
-        .coalesce(16)
-    
-    df_gkg = df_gkg.withColumn("tone", F.split(F.col("raw_tone_stats"), ",").getItem(0).cast("double"))
-    df_gkg = df_gkg.withColumn("ts", F.col("ingested_at").cast("timestamp").cast("long"))
+    def read_and_explode(cutoff):
+        df = spark.read.format("delta").load(gkg_path) \
+            .filter(F.col("ingested_at").cast("string") >= cutoff) \
+            .select("ingested_at", "raw_tone_stats", "persons_array", "themes_array", "orgs_array", "locs_array") \
+            .coalesce(8)
+        df = df.withColumn("tone", F.split(F.col("raw_tone_stats"), ",").getItem(0).cast("double"))
+        df = df.withColumn("ts", F.col("ingested_at").cast("timestamp").cast("long"))
+        parts = [
+            df.select("ts", "tone", F.explode("persons_array").alias("entity_name"), F.lit("person").alias("entity_type")),
+            df.select("ts", "tone", F.explode("themes_array").alias("entity_name"), F.lit("theme").alias("entity_type")),
+            df.select("ts", "tone", F.explode("orgs_array").alias("entity_name"), F.lit("organization").alias("entity_type")),
+            df.select("ts", "tone", F.explode("locs_array").alias("entity_name"), F.lit("location").alias("entity_type")),
+        ]
+        result = parts[0]
+        for p in parts[1:]:
+            result = result.unionAll(p)
+        return result.filter(F.col("entity_name").rlike("^[A-Za-z0-9 _]+$"))
 
-    gkg_entities = []
-    gkg_entities.append(df_gkg.select("ts", "tone", F.explode("persons_array").alias("entity_name"), F.lit("person").alias("entity_type")))
-    gkg_entities.append(df_gkg.select("ts", "tone", F.explode("themes_array").alias("entity_name"), F.lit("theme").alias("entity_type")))
-    gkg_entities.append(df_gkg.select("ts", "tone", F.explode("orgs_array").alias("entity_name"), F.lit("organization").alias("entity_type")))
-    gkg_entities.append(df_gkg.select("ts", "tone", F.explode("locs_array").alias("entity_name"), F.lit("location").alias("entity_type")))
+    # Pass A — 90-day baseline count (GROUP BY, no window sort)
+    df_90d = read_and_explode(cutoff_90d)
+    df_baseline = df_90d.groupBy("entity_type", "entity_name").agg(
+        F.count("ts").alias("vol_90d")
+    )
+    df_baseline.cache()
+    df_baseline.count()  # materialise before Pass B kicks off
 
-    df_all = gkg_entities[0]
-    for df in gkg_entities[1:]:
-        df_all = df_all.unionAll(df)
-
-    df_all = df_all.filter(F.col("entity_name").rlike("^[A-Za-z0-9 _]+$"))
-
-    # 2. Add Multi-Window Velocity Signals
+    # Pass B — recent 24h range windows (small data slice)
+    df_24h = read_and_explode(cutoff_24h)
     win_15m = Window.partitionBy("entity_type", "entity_name").orderBy("ts").rangeBetween(-900, 0)
     win_24h = Window.partitionBy("entity_type", "entity_name").orderBy("ts").rangeBetween(-86400, 0)
-    win_90d = Window.partitionBy("entity_type", "entity_name").orderBy("ts").rangeBetween(-7776000, 0)
 
-    df_summary = df_all \
-        .withColumn("vol_15m", F.count("ts").over(win_15m)) \
-        .withColumn("vol_24h", F.count("ts").over(win_24h)) \
-        .withColumn("vol_90d", F.count("ts").over(win_90d)) \
+    df_summary = df_24h \
+        .withColumn("vol_15m",  F.count("ts").over(win_15m)) \
+        .withColumn("vol_24h",  F.count("ts").over(win_24h)) \
         .withColumn("tone_15m", F.avg("tone").over(win_15m)) \
         .withColumn("tone_24h", F.avg("tone").over(win_24h))
 
-    # 3. Aggregate to latest state per entity
     df_latest = df_summary.groupBy("entity_type", "entity_name").agg(
         F.max("vol_15m").alias("vol_15m"),
         F.max("vol_24h").alias("vol_24h"),
-        F.max("vol_90d").alias("vol_90d"),
         F.last("tone_15m").alias("tone_15m"),
-        F.last("tone_24h").alias("tone_24h")
+        F.last("tone_24h").alias("tone_24h"),
     )
+
+    # Join baseline count back
+    df_latest = df_latest.join(F.broadcast(df_baseline), on=["entity_type", "entity_name"], how="left") \
+        .fillna({"vol_90d": 0})
 
     # 4. Spike Detection Signal (90 days baseline: 90*24*4 = 8640)
     # Require at least 10 baseline mentions before trusting the spike signal.

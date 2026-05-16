@@ -12,6 +12,8 @@ if platform.system() == "Linux":
 import duckdb
 import chromadb
 from groq import Groq
+from openai import OpenAI
+from sentence_transformers import SentenceTransformer
 import json
 import pandas as pd
 from datetime import datetime, timedelta, timezone
@@ -28,11 +30,25 @@ GOLD_MISPRICING = os.path.join(PROJECT_ROOT, "data", "gold", "mispricing_scores"
 GOLD_BRIEFS     = os.path.join(PROJECT_ROOT, "data", "gold", "intelligence_briefs")
 CHROMA_PATH     = os.path.join(PROJECT_ROOT, "data", "chroma")
 
-SIMILARITY_FLOOR = 0.35
+SIMILARITY_FLOOR = 0.50
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 groq_client  = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
-GROQ_MODEL   = "llama-3.1-8b-instant"
+GROQ_MODEL   = "llama-3.3-70b-versatile"
+
+openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+_minilm_model = None
+
+def _get_query_embedding(collection_name: str, text: str):
+    """Returns query embedding matching the collection's stored dimensions."""
+    if collection_name == "silver_news_enriched":
+        resp = openai_client.embeddings.create(model="text-embedding-3-small", input=[text])
+        return [resp.data[0].embedding]
+    else:
+        global _minilm_model
+        if _minilm_model is None:
+            _minilm_model = SentenceTransformer("all-MiniLM-L6-v2")
+        return _minilm_model.encode([text]).tolist()
 
 # ---------------------------------------------------------
 # 2. CANDIDATE SELECTION
@@ -88,7 +104,7 @@ def _flatten_llm_field(value):
 # ---------------------------------------------------------
 # 4. RAG SEARCH
 # ---------------------------------------------------------
-def fetch_rag_context(collections, query_text, current_time, window_mins=1440):
+def fetch_rag_context(collections, query_text, current_time, window_mins=4320):
     start_ts    = int((current_time - timedelta(minutes=window_mins)).timestamp())
     end_ts      = int(current_time.timestamp())
     scored_docs = []
@@ -97,8 +113,9 @@ def fetch_rag_context(collections, query_text, current_time, window_mins=1440):
         collections = [collections]
 
     for coll in collections:
+        query_embedding = _get_query_embedding(coll.name, query_text)
         results = coll.query(
-            query_texts=[query_text],
+            query_embeddings=query_embedding,
             n_results=5,
             where={
                 "$and": [
@@ -225,7 +242,16 @@ def main():
 
         print(f"\n[Predictive] ANALYZING: {market['ticker']} (Score: {market['mispricing_score']:.1f})")
 
-        context_docs = fetch_rag_context(active_collections, str(market['title']), market_time)
+        # Enrich the query with odds context and side framing so the embedding
+        # search finds documents relevant to the specific directional question,
+        # not just the topic in general.
+        odds_pct = round(float(market['current_odds']) * 100, 1)
+        enriched_query = (
+            f"Prediction market question: {market['title']} "
+            f"Current market probability: {odds_pct}%. "
+            f"Find evidence about whether this event will happen."
+        )
+        context_docs = fetch_rag_context(active_collections, enriched_query, market_time)
         if not context_docs:
             print(f"    > No RAG matches found. Skipping.")
             continue
@@ -238,16 +264,20 @@ def main():
 
         rag_score = max([d['score'] for d in context_docs])
         llm_pct = float(brief.get("confidence_pct", 50)) / 100.0
-        confidence = round(0.6 * llm_pct + 0.4 * rag_score, 4)
+        # Use LLM probability directly — rag_score is evidence quality, not a probability.
+        # Blending compressed confidence toward 0.5 and inflated Kelly edges.
+        confidence = round(llm_pct, 4)
         current_odds = float(market['current_odds'])
         llm_confidence = float(brief.get("confidence_pct", 50)) / 100.0
         recommended = brief.get("recommended_side", "yes")
 
-        # Edge pre-check: Kelly is only positive when LLM confidence > market-implied probability
-        # for the recommended side. Skip if the market is already more confident than the LLM.
+        # Calibration guard: LLM must beat the market by at least MIN_EDGE percentage points,
+        # not just any positive margin. A 51% LLM vs a 50% market is noise; +10pp is the
+        # threshold where edge survives LLM miscalibration.
+        MIN_EDGE = 0.10
         market_prob = current_odds if recommended == "yes" else (1.0 - current_odds)
-        if confidence <= market_prob:
-            print(f"    > No edge: LLM {confidence:.0%} conf vs market {market_prob:.0%} implied — skipping")
+        if confidence < market_prob + MIN_EDGE:
+            print(f"    > Edge too thin: LLM {confidence:.0%} vs market {market_prob:.0%} (need +{MIN_EDGE:.0%}) — skipping")
             continue
 
         # odds_delta = implied move: LLM-implied YES probability minus market YES probability.
@@ -266,6 +296,7 @@ def main():
             "odds_delta":       odds_delta,
             "mispricing_score": float(market['mispricing_score']),
             "confidence_score": float(confidence),
+            "rag_score":        round(rag_score, 4),
             "event_at":         current_time.isoformat(),
             "ingested_at":      current_time.isoformat(),
         }

@@ -36,6 +36,7 @@ export default function App() {
   const [showBacktest, setShowBacktest] = useState(false);
   const [backtestData, setBacktestData] = useState(null);
   const [backtestLoading, setBacktestLoading] = useState(false);
+  const [backtestCurrentOnly, setBacktestCurrentOnly] = useState(true);
   const toastTimer = useRef(null);
 
   const showToast = useCallback((msg) => {
@@ -121,16 +122,16 @@ export default function App() {
     } catch (_) { }
   }, []);
 
-  const fetchBacktest = useCallback(async () => {
+  const fetchBacktest = useCallback(async (currentOnly = backtestCurrentOnly) => {
     setBacktestLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/api/backtest?days=30`);
+      const res = await fetch(`${API_BASE}/api/backtest?days=30&current_system_only=${currentOnly}`);
       if (!res.ok) return;
       const data = await res.json();
       setBacktestData(data);
     } catch (_) { }
     finally { setBacktestLoading(false); }
-  }, []);
+  }, [backtestCurrentOnly]);
 
   useEffect(() => {
     fetchIntelligence();
@@ -346,14 +347,35 @@ export default function App() {
             </div>
             <div className="modal-body">
             <div style={{ padding: '0.5rem 1.5rem 0.5rem' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
                 <div className="section-heading" style={{ marginBottom: 0 }}>Signal Backtest · Last 30 Days</div>
+                <label
+                  title="Filter to briefs the current pipeline would have written (0.25–0.75 YES bid + positive edge)"
+                  style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '0.62rem', color: 'var(--text-secondary)', cursor: 'pointer', userSelect: 'none' }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={backtestCurrentOnly}
+                    onChange={e => {
+                      const v = e.target.checked;
+                      setBacktestCurrentOnly(v);
+                      fetchBacktest(v);
+                    }}
+                    style={{ cursor: 'pointer' }}
+                  />
+                  Current pipeline only
+                </label>
                 <button
-                  onClick={fetchBacktest}
+                  onClick={() => fetchBacktest()}
                   style={{ padding: '3px 10px', borderRadius: '5px', border: '1px solid var(--border)', fontSize: '0.62rem', cursor: 'pointer', background: 'transparent', color: 'var(--text-muted)' }}
                 >
                   {backtestLoading ? 'Loading…' : 'Refresh'}
                 </button>
+                {backtestData?.stats?.excluded > 0 && (
+                  <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)', fontFamily: 'JetBrains Mono, monospace' }}>
+                    {backtestData.stats.excluded} pre-guardrail brief{backtestData.stats.excluded === 1 ? '' : 's'} hidden
+                  </span>
+                )}
               </div>
 
               {backtestLoading && !backtestData ? (

@@ -167,17 +167,27 @@ def generate_mispricing_scores(spark, kalshi_history_path, gdelt_summaries_path,
     df_final = df_latest.join(df_max_signal, on="ticker", how="left")
 
     # 5. Calculate Smart Mispricing Score
-    # Formula: (VolSpike * abs(Sentiment) * 20) * (1 - abs(PriceDelta))
-    # This rewards high news signal + strong sentiment but DECAYS if the price already moved.
-    
-    # Score = spike(0-10) × |sentiment|(0-1) × 20 × (1 - |delta|)
-    # Max raw = 10 × 1.0 × 20 = 200, capped at 100.
-    # Threshold of 80 requires spike ≥ 8x + sentiment ≥ 0.5, or spike ≥ 4x + sentiment ≥ 1.0.
+    # Formula: (VolSpike * abs(Sentiment) * 20) * (1 - max(|delta_15m|, |delta_1h|, |delta_24h|))
+    # Penalize the score by the LARGEST movement across any computed window — if the price has
+    # already moved in *any* recent timeframe, the market is reacting and edge is being absorbed.
+    # The least(0.99, ...) cap prevents negative scores when delta exceeds 100% (cheap markets
+    # going 1¢ → 3¢ register as +200%).
+    #
+    # Score = spike(0-10) × |sentiment|(0-1) × 20 × (1 - max_abs_delta)
+    # Max raw = 10 × 1.0 × 20 = 200, capped at 100 below.
+    max_abs_delta = F.least(
+        F.lit(0.99),
+        F.greatest(
+            F.abs(F.col("delta_15m")),
+            F.abs(F.col("delta_1h")),
+            F.abs(F.col("delta_24h")),
+        ),
+    )
     smart_score = (
         F.when(F.col("max_spike_multiplier").isNull(), F.lit(0.0))
          .otherwise(
              (F.col("max_spike_multiplier") * F.abs(F.col("avg_sentiment")) * 20.0) *
-             (F.lit(1.0) - F.abs(F.col("delta_15m")))
+             (F.lit(1.0) - max_abs_delta)
          )
     )
 

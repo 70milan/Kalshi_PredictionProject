@@ -244,6 +244,7 @@ export default function MispricingCard({ brief, bankroll, onTradeResult, onTrade
                   { label: 'Δ Odds',    value: `${brief.odds_delta >= 0 ? '+' : ''}${(brief.odds_delta * 100).toFixed(1)}%` },
                   { label: 'Score',     value: brief.mispricing_score != null ? Math.round(brief.mispricing_score) : null },
                   { label: 'Conf',      value: `${confidencePct}%` },
+                  { label: 'Evidence',  value: brief.rag_score != null ? Number(brief.rag_score).toFixed(2) : null },
                 ].filter(p => p.value != null).map(({ label, value }) => (
                   <span key={label} style={{
                     fontSize: '0.62rem',

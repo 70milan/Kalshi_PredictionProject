@@ -52,11 +52,19 @@ def build_spark():
         SparkSession.builder
         .appName("PredictIQ_Unified_ETL")
         .config("spark.driver.memory", "4g")
-        .config("spark.sql.shuffle.partitions", "16")
+        # Shuffle partitions: start low, AQE adjusts up if needed
+        .config("spark.sql.shuffle.partitions", "8")
+        .config("spark.default.parallelism", "8")
+        # AQE: coalesce aggressively for small datasets
         .config("spark.sql.adaptive.enabled", "true")
         .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
-        .config("spark.sql.adaptive.coalescePartitions.minPartitionSize", "32mb")
-        .config("spark.sql.files.maxPartitionBytes", "128mb")
+        .config("spark.sql.adaptive.coalescePartitions.minPartitionSize", "1mb")   # was 32mb — allows real coalescing
+        .config("spark.sql.adaptive.advisoryPartitionSizeInBytes", "16mb")
+        # File batching: openCostInBytes penalises opening many tiny files,
+        # forcing Spark to batch ~400 small GDELT files into one task instead
+        # of creating 1800 tasks (one per file).
+        .config("spark.sql.files.maxPartitionBytes", "32mb")
+        .config("spark.sql.files.openCostInBytes", "4194304")                      # 4MB — key fix for 1812-task problem
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
         .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
         .config("spark.databricks.delta.schema.autoMerge.enabled", "true")

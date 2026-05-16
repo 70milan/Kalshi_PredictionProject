@@ -6,6 +6,10 @@ import duckdb
 import pandas as pd
 from datetime import datetime, timezone
 from dotenv import load_dotenv
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    from backports.zoneinfo import ZoneInfo
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives import serialization
@@ -245,7 +249,6 @@ def preview(markets: list, n: int = 5):
 # ─────────────────────────────────────────────
 
 def main():
-    from zoneinfo import ZoneInfo
     est_now = datetime.now(ZoneInfo("America/New_York"))
     utc_now = datetime.now(timezone.utc)
     print("=" * 65)
@@ -307,7 +310,6 @@ if __name__ == "__main__":
             except OSError:
                 pass
             
-        from zoneinfo import ZoneInfo
         est_now = datetime.now(ZoneInfo("America/New_York"))
         print(f"\n[Kalshi Active] Poll complete at {est_now.strftime('%I:%M:%S %p EST')}. Sleeping {SLEEP_SECONDS // 60} minutes...")
         time.sleep(SLEEP_SECONDS)

@@ -74,7 +74,12 @@ def read_bronze_incremental(spark, news_sources, ROOT, watermarks):
         watermark_ts = 0
         if source_key in watermarks:
             try:
-                watermark_ts = parser.parse(str(watermarks[source_key])).timestamp()
+                wm_dt = parser.parse(str(watermarks[source_key]))
+                if wm_dt.tzinfo is None:
+                    wm_dt = wm_dt.replace(tzinfo=timezone.utc)
+                # 1h safety buffer: never skip a file due to mtime/ingested_at
+                # clock slop. The row-level filter dedups the overlap exactly.
+                watermark_ts = wm_dt.timestamp() - 3600
             except Exception:
                 pass
                 
@@ -99,8 +104,13 @@ def read_bronze_incremental(spark, news_sources, ROOT, watermarks):
         
         if source_key in watermarks:
             wm = str(watermarks[source_key])
-
-            df_source = df_source.filter(F.col("ingested_at") > wm)
+            # Compare as real timestamps, not strings. Bronze ingested_at uses an
+            # ISO 'T' separator; the Silver-derived watermark uses a space. Raw
+            # string comparison sorted 'T' (84) above ' ' (32), so every same-day
+            # article re-passed every cycle — re-appending ~7800 dupes per run.
+            df_source = df_source.filter(
+                F.to_timestamp(F.col("ingested_at")) > F.to_timestamp(F.lit(wm))
+            )
             
         dfs.append(df_source)
         

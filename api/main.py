@@ -170,6 +170,18 @@ def get_intelligence():
         parquet_glob = os.path.join(BRIEFS_PATH, "*.parquet").replace("\\", "/")
         bronze_latest = BRONZE_LATEST_PATH.replace("\\", "/")
 
+        # rag_score was added after initial deployment — existing parquets lack the column.
+        # union_by_name=true only merges schemas of files that HAVE the column, so if none
+        # do yet the column simply doesn't exist. Check schema first and fall back to NULL.
+        has_rag_score = False
+        try:
+            sd = con.execute(f"DESCRIBE SELECT * FROM read_parquet('{parquet_glob}', union_by_name=true) LIMIT 1").df()
+            has_rag_score = 'rag_score' in sd['column_name'].str.lower().tolist()
+        except Exception:
+            pass
+        rag_b  = "b.rag_score,"             if has_rag_score else "NULL::DOUBLE AS rag_score,"
+        rag_nb = "rag_score,"               if has_rag_score else "NULL::DOUBLE AS rag_score,"
+
         # Cross-reference against latest.parquet (overwritten every 15 min by ingestion).
         # We JOIN it to get the live market odds without spamming the Kalshi API on load.
         if os.path.exists(BRONZE_LATEST_PATH):
@@ -185,6 +197,7 @@ def get_intelligence():
                     b.verdict,
                     b.decision_reason,
                     b.confidence_score,
+                    {rag_b}
                     b.ingested_at,
                     b.recommended_side,
                     m.yes_bid_dollars AS live_yes_bid,
@@ -197,7 +210,7 @@ def get_intelligence():
                             ORDER BY confidence_score DESC, ingested_at DESC
                         ) AS rn
                     FROM read_parquet('{parquet_glob}', union_by_name=true)
-                    WHERE CAST(ingested_at AS DATE) = CURRENT_DATE
+                    WHERE ingested_at >= CURRENT_TIMESTAMP - INTERVAL '36 hours'
                       AND verdict NOT LIKE '%Error%'
                       AND verdict NOT LIKE '%GHOST PUMP%'
                       AND verdict IS NOT NULL
@@ -222,6 +235,7 @@ def get_intelligence():
                     verdict,
                     decision_reason,
                     confidence_score,
+                    {rag_nb}
                     ingested_at,
                     recommended_side,
                     NULL AS live_yes_bid,
@@ -234,7 +248,7 @@ def get_intelligence():
                             ORDER BY confidence_score DESC, ingested_at DESC
                         ) AS rn
                     FROM read_parquet('{parquet_glob}', union_by_name=true)
-                    WHERE CAST(ingested_at AS DATE) = CURRENT_DATE
+                    WHERE ingested_at >= CURRENT_TIMESTAMP - INTERVAL '36 hours'
                       AND verdict NOT LIKE '%Error%'
                       AND verdict NOT LIKE '%GHOST PUMP%'
                       AND verdict IS NOT NULL
@@ -285,11 +299,12 @@ def get_intelligence():
         live_yes_bid = float(live_yes_bid_raw) if live_yes_bid_raw is not None and not pd.isna(live_yes_bid_raw) else None
         current_yes_bid = live_yes_bid if live_yes_bid is not None else yes_bid
 
-        # Edge pre-check using live price: LLM confidence must beat market's implied probability
-        # for the recommended side, otherwise Kelly will be negative and the signal is noise.
+        # Calibration guard: LLM must beat market by at least MIN_EDGE percentage points (not
+        # just any positive margin), accounting for LLM overconfidence. Mirror of predict_movements.
+        MIN_EDGE = 0.10
         market_prob = current_yes_bid if recommended_side == "yes" else (1.0 - current_yes_bid)
-        if confidence <= market_prob:
-            continue  # market already more confident than LLM — stale or no-edge brief
+        if confidence < market_prob + MIN_EDGE:
+            continue  # edge too thin to trust given LLM calibration
 
         # Kelly must be computed on the actual side being purchased.
         # For NO bets: price = 1 - yes_bid (how much NO costs per contract).
@@ -309,6 +324,7 @@ def get_intelligence():
             "decision_reason":   str(row.get("decision_reason", "") or ""),
             "recommended_side":  recommended_side,
             "confidence_score":  confidence,
+            "rag_score":         float(row["rag_score"]) if row.get("rag_score") is not None and not pd.isna(row.get("rag_score")) else None,
             "ingested_at":       str(row.get("ingested_at", "")),
             "kelly":             kelly,
             "safe_mode":         SAFE_MODE,
@@ -697,7 +713,7 @@ def get_portfolio_balance():
 # ─────────────────────────────────────────────
 
 @app.get("/api/backtest")
-def get_backtest(days: int = 30, sim_bankroll: float = 1000.0):
+def get_backtest(days: int = 30, sim_bankroll: float = 1000.0, current_system_only: bool = False):
     """
     Simulated backtest over all historical intelligence briefs.
 
@@ -706,7 +722,11 @@ def get_backtest(days: int = 30, sim_bankroll: float = 1000.0):
       - Falls back to latest.parquet for open positions → OPEN with paper P&L
       - Computes Kelly-sized simulated P&L at a $1000 sim_bankroll
 
-    Returns per-brief rows + aggregate stats.
+    current_system_only=True applies the SAME gates the live inference + API enforce today:
+      - yes_bid must be in [0.25, 0.75]   (candidate price filter)
+      - confidence > market-implied prob for the recommended side (edge pre-check)
+    This excludes pre-guardrail historical artifacts so you see only what the CURRENT
+    pipeline would have written.
     """
     if not os.path.exists(BRIEFS_PATH):
         return {"rows": [], "stats": {}}
@@ -777,12 +797,24 @@ def get_backtest(days: int = 30, sim_bankroll: float = 1000.0):
     live_map    = dict(zip(live_df["ticker"], live_df["live_yes_bid"])) if not live_df.empty else {}
 
     rows = []
+    excluded = 0
     for _, b in briefs_df.iterrows():
         ticker     = b["ticker"]
         side       = b["recommended_side"]          # "yes" or "no"
         entry_yes  = float(b["current_odds"])        # YES bid when brief was written
         confidence = float(b["confidence_score"])
         entry_price = entry_yes if side == "yes" else (1.0 - entry_yes)  # cost of the contract we'd buy
+
+        # Apply current-pipeline gates if requested (drops pre-guardrail briefs).
+        # Mirrors predict_movements.py + the /api/intelligence guard.
+        if current_system_only:
+            if entry_yes < 0.25 or entry_yes > 0.75:
+                excluded += 1
+                continue
+            market_prob = entry_yes if side == "yes" else (1.0 - entry_yes)
+            if confidence < market_prob + 0.10:  # +10pp calibration guard
+                excluded += 1
+                continue
 
         # Outcome resolution
         result = settled_map.get(ticker)   # "yes", "no", or None
@@ -851,6 +883,8 @@ def get_backtest(days: int = 30, sim_bankroll: float = 1000.0):
         "sim_resolved_pnl": round(sum(r["sim_pnl"] for r in resolved if r["sim_pnl"] is not None), 2),
         "sim_bankroll":     sim_bankroll,
         "days":             days,
+        "current_system_only": current_system_only,
+        "excluded":         excluded,
     }
 
     return {"rows": sorted(rows, key=lambda r: r["brief_date"], reverse=True), "stats": stats}

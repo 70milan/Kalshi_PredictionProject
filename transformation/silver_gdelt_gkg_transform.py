@@ -77,40 +77,29 @@ def discover_bronze_files(bronze_base, watermark):
 
 def load_bronze_chunked(spark, bronze_files, watermark):
     """
-    Reads Bronze parquet files one at a time using Spark and filters by watermark
-    BEFORE unioning. This prevents loading the full Bronze GKG history into
-    driver memory — GKG files are wider and heavier than Events files.
-
-    Returns a Spark DataFrame of only new rows, or None if empty.
-    Each file is read individually and filtered; only matching rows are kept
-    before the union. This is O(new rows) in memory, not O(all Bronze).
+    Reads all new Bronze files in one Spark read call, then filters by watermark.
+    One scan node + one filter is orders of magnitude faster than the old approach
+    of reading each file individually and doing .limit(1).count() per file —
+    which created N separate Spark jobs and a union plan with N scan nodes.
     """
-    filtered_dfs = []
-
-    for fpath in bronze_files:
-        try:
-            df = spark.read.option("mergeSchema", "true").parquet(fpath)
-        except Exception as e:
-            print(f"[Silver GDELT GKG] WARNING: Could not read {fpath}: {e}")
-            continue
-
-        if watermark:
-            df = df.filter(F.col("ingested_at").cast("string") > watermark)
-
-        # Cheap check: skip files with zero rows after filter before adding to union
-        # .limit(1).count() is O(1) per partition — avoids full scan just to count
-        if df.limit(1).count() > 0:
-            filtered_dfs.append(df)
-
-    if not filtered_dfs:
+    if not bronze_files:
+        return None
+    try:
+        df = spark.read.option("mergeSchema", "true").parquet(*bronze_files)
+    except Exception as e:
+        print(f"[Silver GDELT GKG] WARNING: Could not batch-read Bronze files: {e}")
         return None
 
-    # Union all filtered slices — only new rows are in memory at this point
-    result = filtered_dfs[0]
-    for df in filtered_dfs[1:]:
-        result = result.unionByName(df, allowMissingColumns=True)
+    if watermark:
+        # Compare as real timestamps — bronze uses ISO 'T' separator, the
+        # silver-derived watermark uses a space. String comparison sorted 'T'
+        # above ' ', so every row re-passed the filter every cycle.
+        df = df.filter(F.to_timestamp(F.col("ingested_at")) > F.to_timestamp(F.lit(watermark)))
 
-    return result
+    if df.limit(1).count() == 0:
+        return None
+
+    return df
 
 
 def clean_gkg_list(column_name):
@@ -154,9 +143,10 @@ def is_batch_already_written(spark, silver_history_path, batch_min_ingested_at):
 def write_history(df_silver, silver_history_path):
     """
     Append-only write to the history Delta table.
-    Preserves full audit trail of every ingestion batch.
+    coalesce(1) writes one file per cycle instead of one per partition —
+    prevents the small-file accumulation that caused 1800+ tasks per run.
     """
-    df_silver.write.format("delta").option("mergeSchema", "true").mode("append").save(silver_history_path)
+    df_silver.coalesce(1).write.format("delta").option("mergeSchema", "true").mode("append").save(silver_history_path)
 
 
 def merge_current(spark, df_silver, silver_current_path):
