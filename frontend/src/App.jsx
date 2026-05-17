@@ -192,6 +192,23 @@ export default function App() {
 
   return (
     <>
+      {readonlyMode && (
+        <div style={{
+          background: 'var(--red-dim)',
+          color: 'var(--red)',
+          textAlign: 'center',
+          padding: '0.45rem 1rem',
+          fontSize: '0.72rem',
+          fontWeight: 700,
+          letterSpacing: '0.07em',
+          borderBottom: '1px solid var(--red)',
+          position: 'sticky',
+          top: 0,
+          zIndex: 1000,
+        }}>
+          READ-ONLY — Trading disabled on public view
+        </div>
+      )}
       {/* HEADER */}
       <header className="header">
         <div className="header-brand">
@@ -534,7 +551,7 @@ export default function App() {
                         borderRadius: 'var(--radius)',
                         padding: '0.75rem 1rem',
                         display: 'grid',
-                        gridTemplateColumns: '1.5fr 0.7fr 0.7fr 0.8fr 1.2fr 1.5fr',
+                        gridTemplateColumns: `1.5fr 0.7fr 0.7fr 0.8fr 1.2fr 1.5fr${!readonlyMode && isAction ? ' auto' : ''}`,
                         gap: '0.75rem',
                         alignItems: 'center',
                         fontSize: '0.72rem',
@@ -599,6 +616,52 @@ export default function App() {
                       <div style={{ fontSize: '0.65rem', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
                         {s.reason}
                       </div>
+
+                      {!readonlyMode && isAction && (
+                        <div style={{ display: 'flex', alignItems: 'center' }}>
+                          <button
+                            style={{
+                              background: meta.bg,
+                              color: meta.color,
+                              border: `1px solid ${meta.color}`,
+                              borderRadius: '4px',
+                              padding: '4px 10px',
+                              fontSize: '0.62rem',
+                              fontWeight: 700,
+                              cursor: 'pointer',
+                              whiteSpace: 'nowrap',
+                              letterSpacing: '0.04em',
+                            }}
+                            onClick={async () => {
+                              const qty = Math.floor(parseFloat(s.qty ?? 1));
+                              const price = parseFloat(s.current_price ?? 0);
+                              try {
+                                const r = await fetch(`${API_BASE}/api/trade`, {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({
+                                    ticker: s.ticker,
+                                    side: s.side,
+                                    count: qty,
+                                    price_dollars: price,
+                                    action: 'sell',
+                                  }),
+                                });
+                                const d = await r.json();
+                                if (!r.ok) {
+                                  showToast(`Exit failed: ${d.detail ?? r.status}`);
+                                } else {
+                                  showToast(`Exit submitted: ${qty}x ${s.ticker} @ ${Math.round(price * 100)}¢`);
+                                }
+                              } catch (e) {
+                                showToast('Exit request failed — check API');
+                              }
+                            }}
+                          >
+                            EXECUTE EXIT
+                          </button>
+                        </div>
+                      )}
                     </div>
                   );
                 })}

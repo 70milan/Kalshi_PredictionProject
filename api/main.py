@@ -544,6 +544,7 @@ class TradeRequest(BaseModel):
     side:          str    # "yes" or "no"
     count:         int    # number of contracts
     price_dollars: float  # ask price in dollars (e.g. 0.963)
+    action:        str = "buy"  # "buy" or "sell"
 
 
 @app.post("/api/trade")
@@ -587,7 +588,7 @@ def execute_trade(trade: TradeRequest, request: Request):
         "ticker":           trade.ticker,
         "client_order_id":  hashlib.md5(f"{trade.ticker}-{time.time()}".encode()).hexdigest(),
         "type":             "limit",
-        "action":           "buy",
+        "action":           trade.action,
         "side":             trade.side,
         "count":            trade.count,
     }
