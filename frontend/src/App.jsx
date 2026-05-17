@@ -2,10 +2,12 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import MispricingCard from './components/MispricingCard';
 import './index.css';
 
-// Dynamically point to the backend whether accessed via localhost or a Tailscale IP
-const API_BASE = window.location.hostname === 'localhost'
-  ? 'http://localhost:8000'
-  : `http://${window.location.hostname}:8000`;
+// VITE_API_URL is set at build time for the public GitHub Pages build (points to Cloudflare tunnel).
+// At runtime, fall back to same-host:8000 for local/Tailscale use.
+const API_BASE = import.meta.env.VITE_API_URL
+  || (window.location.hostname === 'localhost'
+    ? 'http://localhost:8000'
+    : `http://${window.location.hostname}:8000`);
 const POLL_MS = 15_000;
 
 const ACTION_META = {
@@ -18,6 +20,7 @@ const ACTION_META = {
 
 export default function App() {
   const [briefs, setBriefs] = useState([]);
+  const [readonlyMode, setReadonlyMode] = useState(false);
   const [safeMode, setSafeMode] = useState(true);
   const [bankroll, setBankroll] = useState(1000);
   const [loading, setLoading] = useState(true);
@@ -132,6 +135,13 @@ export default function App() {
     } catch (_) { }
     finally { setBacktestLoading(false); }
   }, [backtestCurrentOnly]);
+
+  useEffect(() => {
+    fetch(`${API_BASE}/api/config`)
+      .then(r => r.json())
+      .then(d => { setReadonlyMode(d.readonly); setSafeMode(d.safe_mode); })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     fetchIntelligence();
@@ -296,7 +306,8 @@ export default function App() {
                       const avgCents = (costBasis != null && qty > 0)
                         ? `${((costBasis / qty) * 100).toFixed(1)}¢`
                         : '—';
-                      const pnl = costBasis != null ? exposure - costBasis : null;
+                      const exitSignal = exitSignals.find(s => s.ticker === p.ticker);
+                      const pnl = exitSignal?.unrealized_pnl ?? (costBasis != null ? exposure - costBasis : null);
                       const pnlColor = (pnl ?? 0) >= 0 ? 'var(--green)' : 'var(--red)';
                       
                       // Title logic: Use the real title if found, otherwise show only ticker (no doubles)
@@ -325,7 +336,7 @@ export default function App() {
                           <span style={{ color: pnlColor }}>
                             {pnl == null ? '—' : `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`}
                           </span>
-                          <span><button className="cancel-btn" onClick={() => cancelOrder(p.ticker)} title="Cancel Order(s)">×</button></span>
+                          <span>{!readonlyMode && <button className="cancel-btn" onClick={() => cancelOrder(p.ticker)} title="Cancel Order(s)">×</button>}</span>
                         </div>
                       );
                     })}
@@ -736,6 +747,7 @@ export default function App() {
                 key={brief.ticker}
                 brief={brief}
                 bankroll={bankroll}
+                readonly={readonlyMode}
                 onTradeResult={showToast}
                 onTradeComplete={fetchOrders}
               />

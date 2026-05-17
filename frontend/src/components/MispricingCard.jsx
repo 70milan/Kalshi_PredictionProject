@@ -1,11 +1,12 @@
 import { useState, useCallback, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 
-const API_BASE = window.location.hostname === 'localhost'
-  ? 'http://localhost:8000'
-  : `http://${window.location.hostname}:8000`;
+const API_BASE = import.meta.env.VITE_API_URL
+  || (window.location.hostname === 'localhost'
+    ? 'http://localhost:8000'
+    : `http://${window.location.hostname}:8000`);
 
-export default function MispricingCard({ brief, bankroll, onTradeResult, onTradeComplete, isNew = false }) {
+export default function MispricingCard({ brief, bankroll, readonly = false, onTradeResult, onTradeComplete, isNew = false }) {
   const [executing, setExecuting] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
   const [confirm, setConfirm] = useState(null); // { side, priceDollars, recommended }
@@ -198,9 +199,11 @@ export default function MispricingCard({ brief, bankroll, onTradeResult, onTrade
             <span className="freshness-dot" style={{ background: freshnessColor }} />
             {briefDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
           </div>
-          <button className={tradeBtnClass} onClick={handleTradeClick} disabled={executing || isNoTrade}>
-            {tradeBtnLabel}
-          </button>
+          {!readonly && (
+            <button className={tradeBtnClass} onClick={handleTradeClick} disabled={executing || isNoTrade}>
+              {tradeBtnLabel}
+            </button>
+          )}
         </div>
         </div>
 
@@ -344,12 +347,14 @@ export default function MispricingCard({ brief, bankroll, onTradeResult, onTrade
                 <span className="freshness-dot" style={{ background: freshnessColor }} />
                 {briefDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
               </div>
-              <button className={tradeBtnClass} onClick={handleTradeClick} disabled={executing || isNoTrade}>
-                {executing ? 'Fetching price…' :
-                 isNoTrade ? 'No Trade' :
-                 safeMode  ? `Simulate ${(brief.recommended_side ?? 'yes').toUpperCase()}` :
-                             `Execute ${(brief.recommended_side ?? 'yes').toUpperCase()}`}
-              </button>
+              {!readonly && (
+                <button className={tradeBtnClass} onClick={handleTradeClick} disabled={executing || isNoTrade}>
+                  {executing ? 'Fetching price…' :
+                   isNoTrade ? 'No Trade' :
+                   safeMode  ? `Simulate ${(brief.recommended_side ?? 'yes').toUpperCase()}` :
+                               `Execute ${(brief.recommended_side ?? 'yes').toUpperCase()}`}
+                </button>
+              )}
             </div>
 
             </div>{/* end modal-body */}

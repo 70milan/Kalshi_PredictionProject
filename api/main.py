@@ -48,6 +48,7 @@ KALSHI_BASE_URL       = "https://api.elections.kalshi.com/trade-api/v2"
 KALSHI_API_KEY        = os.getenv("KALSHI_API_KEY")
 KALSHI_API_SECRET     = os.getenv("KALSHI_API_SECRET", "")
 SAFE_MODE             = os.getenv("SAFE_MODE", "true").lower() == "true"
+READONLY_MODE         = os.getenv("READONLY_MODE", "false").lower() == "true"
 DEFAULT_BANKROLL      = float(os.getenv("BANKROLL_USD", "1000.0"))
 
 app = FastAPI(title="PredictIQ Intelligence API", version="2.0")
@@ -113,7 +114,7 @@ def _get_titles_from_history(tickers: list) -> dict:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://100.86.91.43:5173"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -210,7 +211,7 @@ def get_intelligence():
                             ORDER BY confidence_score DESC, ingested_at DESC
                         ) AS rn
                     FROM read_parquet('{parquet_glob}', union_by_name=true)
-                    WHERE ingested_at >= CURRENT_TIMESTAMP - INTERVAL '36 hours'
+                    WHERE TRY_CAST(ingested_at AS TIMESTAMPTZ) >= CURRENT_TIMESTAMP - INTERVAL '36 hours'
                       AND verdict NOT LIKE '%Error%'
                       AND verdict NOT LIKE '%GHOST PUMP%'
                       AND verdict IS NOT NULL
@@ -248,7 +249,7 @@ def get_intelligence():
                             ORDER BY confidence_score DESC, ingested_at DESC
                         ) AS rn
                     FROM read_parquet('{parquet_glob}', union_by_name=true)
-                    WHERE ingested_at >= CURRENT_TIMESTAMP - INTERVAL '36 hours'
+                    WHERE TRY_CAST(ingested_at AS TIMESTAMPTZ) >= CURRENT_TIMESTAMP - INTERVAL '36 hours'
                       AND verdict NOT LIKE '%Error%'
                       AND verdict NOT LIKE '%GHOST PUMP%'
                       AND verdict IS NOT NULL
@@ -530,6 +531,8 @@ class TradeRequest(BaseModel):
 @app.post("/api/trade")
 def execute_trade(trade: TradeRequest):
     """Submits a trade to Kalshi. Guard-railed by SAFE_MODE."""
+    if READONLY_MODE:
+        raise HTTPException(status_code=403, detail="Read-only mode — trading disabled.")
     if SAFE_MODE:
         file_exists = os.path.isfile(SIMULATED_TRADES_PATH)
         with open(SIMULATED_TRADES_PATH, "a", encoding="utf-8") as f:
@@ -668,6 +671,8 @@ def get_portfolio_fills(limit: int = 200):
 @app.delete("/api/portfolio/orders/cancel/{ticker}")
 def cancel_orders_for_ticker(ticker: str):
     """Finds and cancels all resting orders for a given ticker."""
+    if READONLY_MODE:
+        raise HTTPException(status_code=403, detail="Read-only mode — cancellation disabled.")
     list_headers = _sign_kalshi_request("GET", "/trade-api/v2/portfolio/orders")
     try:
         r = requests.get(f"{KALSHI_BASE_URL}/portfolio/orders",
@@ -888,6 +893,15 @@ def get_backtest(days: int = 30, sim_bankroll: float = 1000.0, current_system_on
     }
 
     return {"rows": sorted(rows, key=lambda r: r["brief_date"], reverse=True), "stats": stats}
+
+
+# ─────────────────────────────────────────────
+# CONFIG
+# ─────────────────────────────────────────────
+
+@app.get("/api/config")
+def get_config():
+    return {"readonly": READONLY_MODE, "safe_mode": SAFE_MODE}
 
 
 # ─────────────────────────────────────────────
