@@ -19,7 +19,7 @@ import requests
 import duckdb
 import pandas as pd
 from datetime import datetime, timezone
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -50,6 +50,12 @@ KALSHI_API_SECRET     = os.getenv("KALSHI_API_SECRET", "")
 SAFE_MODE             = os.getenv("SAFE_MODE", "true").lower() == "true"
 READONLY_MODE         = os.getenv("READONLY_MODE", "false").lower() == "true"
 DEFAULT_BANKROLL      = float(os.getenv("BANKROLL_USD", "1000.0"))
+
+def _is_public_request(request) -> bool:
+    """Tailscale Funnel proxies public internet traffic as 127.0.0.1.
+    Direct Tailscale device connections arrive as 100.x.x.x.
+    Public requests are always read-only."""
+    return request.client.host == "127.0.0.1"
 
 app = FastAPI(title="PredictIQ Intelligence API", version="2.0")
 
@@ -541,9 +547,9 @@ class TradeRequest(BaseModel):
 
 
 @app.post("/api/trade")
-def execute_trade(trade: TradeRequest):
+def execute_trade(trade: TradeRequest, request: Request):
     """Submits a trade to Kalshi. Guard-railed by SAFE_MODE."""
-    if READONLY_MODE:
+    if READONLY_MODE or _is_public_request(request):
         raise HTTPException(status_code=403, detail="Read-only mode — trading disabled.")
     if SAFE_MODE:
         file_exists = os.path.isfile(SIMULATED_TRADES_PATH)
@@ -681,9 +687,9 @@ def get_portfolio_fills(limit: int = 200):
 
 
 @app.delete("/api/portfolio/orders/cancel/{ticker}")
-def cancel_orders_for_ticker(ticker: str):
+def cancel_orders_for_ticker(ticker: str, request: Request):
     """Finds and cancels all resting orders for a given ticker."""
-    if READONLY_MODE:
+    if READONLY_MODE or _is_public_request(request):
         raise HTTPException(status_code=403, detail="Read-only mode — cancellation disabled.")
     list_headers = _sign_kalshi_request("GET", "/trade-api/v2/portfolio/orders")
     try:
@@ -912,8 +918,8 @@ def get_backtest(days: int = 30, sim_bankroll: float = 1000.0, current_system_on
 # ─────────────────────────────────────────────
 
 @app.get("/api/config")
-def get_config():
-    return {"readonly": READONLY_MODE, "safe_mode": SAFE_MODE}
+def get_config(request: Request):
+    return {"readonly": READONLY_MODE or _is_public_request(request), "safe_mode": SAFE_MODE}
 
 
 # ─────────────────────────────────────────────
