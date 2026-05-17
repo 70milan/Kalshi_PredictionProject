@@ -61,7 +61,7 @@ def get_predictive_candidates(con, min_score=80.0):
     FROM delta_scan('{GOLD_MISPRICING}')
     WHERE flagged_candidate = true
       AND mispricing_score >= {min_score}
-      AND ingested_at >= CURRENT_TIMESTAMP - INTERVAL '48 hours'
+      AND TRY_CAST(ingested_at AS TIMESTAMPTZ) >= CURRENT_TIMESTAMP - INTERVAL '48 hours'
       AND yes_bid BETWEEN 0.25 AND 0.75
     ORDER BY mispricing_score DESC
     LIMIT 3;

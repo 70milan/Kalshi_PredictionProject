@@ -6,6 +6,8 @@
 *.pem
 *.key
 kalshi_api.txt
+.claude.json
+.claude/settings.local.json
 
 # Data & Lakehouse (The "North Star" is to keep these local)
 data/

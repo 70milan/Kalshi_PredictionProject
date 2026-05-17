@@ -215,10 +215,17 @@ def main():
             print(f"[Ledger] {ticker}: position exists but no matching buy fill — skipping")
             continue
 
-        # Use the position's market_exposure_dollars for cost basis — this matches
-        # Kalshi's displayed average price exactly (fills can have rounding drift).
-        market_exposure = float(pos.get("market_exposure_dollars", 0))
-        entry_price = market_exposure / qty if qty > 0 else 0.0
+        # Compute true average entry price from fills (weighted avg).
+        # market_exposure_dollars = current value, not cost basis — don't use it here.
+        total_cost  = sum(
+            (float(f.get("yes_price_dollars") or f.get("yes_price", 0) / 100) if side == "yes"
+             else float(f.get("no_price_dollars") or f.get("no_price", 0) / 100))
+            * float(f.get("count_fp", 0))
+            for f in ticker_fills
+        )
+        total_qty   = sum(float(f.get("count_fp", 0)) for f in ticker_fills)
+        entry_price = total_cost / total_qty if total_qty > 0 else 0.0
+        market_exposure = round(entry_price * qty, 4)
 
         # Earliest fill time = entry timestamp
         first_fill_time = min(
