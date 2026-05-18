@@ -1,0 +1,40 @@
+---
+PredictIQ — Service Management (Prod Terminal via VS Code Tunnel)
+
+---
+CHECK — Are services running?
+
+netstat -ano | findstr "LISTENING" | findstr "8000"
+netstat -ano | findstr "LISTENING" | findstr "8001"
+netstat -ano | findstr "LISTENING" | findstr "5173"
+Each line should show LISTENING if that service is up.
+
+---
+START — All 3 services
+
+start "API" /d "D:\MilanWork\projects_de\predection_project" "D:\MilanWork\projects_de\predection_project\.venv\Scripts\python.exe" -m uvicorn api.main:app --host 0.0.0.0 --port 8000
+
+start "API-RO" /d "D:\MilanWork\projects_de\predection_project" cmd /c "set READONLY_MODE=true && D:\MilanWork\projects_de\predection_project\.venv\S api.main:app --host 0.0.0.0 --port 8001"
+
+start "Frontend" /d "D:\MilanWork\projects_de\predection_project\frontend" cmd /c "npm run dev -- --host"
+
+---
+rvices
+
+for /f "tokens=5" %a in ('netstat -ano ^| findstr :8000 ^| findstr LISTENING') do taskkill /f /pid %a
+for /f "tokens=5" %a in ('netstat -ano ^| findstr :8001 ^| findstr LISTENING') do taskkill /f /pid %a
+for /f "tokens=5" %a in ('netstat -ano ^| findstr :5173 ^| findstr LISTENING') do taskkill /f /pid %a
+
+---
+RESTART — Stop then Start
+
+Run all STOP commands first, wait 3 seconds, then
+
+---
+NOTES
+
+- Run all commands in the VS Code tunnel terminal connected to prod
+- Services survive VS Code/laptop shutdown once started
+- API live: http://100.67.60.86:8000
+- Frontend: http://100.67.60.86:5173
+- Readonly API: http://localhost:8001 (Tailscale Funnel only)
