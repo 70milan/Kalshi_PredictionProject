@@ -101,6 +101,23 @@ services:
     working_dir: /app
 
   # ─────────────────────────────────────────────
+  # FRONTEND — Vite dev server (Tailscale direct, port 5173)
+  # ─────────────────────────────────────────────
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: predictiq_frontend
+    restart: unless-stopped
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "100.67.60.86:5173:5173"
+    command: ["npm", "run", "dev", "--", "--host"]
+    working_dir: /app
+
+  # ─────────────────────────────────────────────
   # API SERVER — live trading (Tailscale direct, port 8000)
   # ─────────────────────────────────────────────
   api-live:
