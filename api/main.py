@@ -785,14 +785,23 @@ def get_backtest(days: int = 30, sim_bankroll: float = 1000.0, current_system_on
 
         tickers_sql = ",".join([f"'{t}'" for t in briefs_df["ticker"].tolist()])
 
-        # Settled outcomes
+        # Settled outcomes — cap to 50 most recent files to avoid slow glob over thousands
         settled_df = pd.DataFrame(columns=["ticker", "result"])
         settled_files = [f for f in os.listdir(SETTLED_MARKETS_DIR) if f.endswith(".parquet")] if os.path.exists(SETTLED_MARKETS_DIR) else []
         if settled_files:
+            settled_files_recent = sorted(
+                settled_files,
+                key=lambda f: os.path.getmtime(os.path.join(SETTLED_MARKETS_DIR, f)),
+                reverse=True
+            )[:50]
+            recent_paths_sql = ", ".join(
+                f"'{os.path.join(SETTLED_MARKETS_DIR, f).replace(chr(92), '/')}'"
+                for f in settled_files_recent
+            )
             try:
                 settled_df = con.execute(f"""
                     SELECT ticker, LOWER(result) AS result
-                    FROM read_parquet('{settled_glob}', union_by_name=true)
+                    FROM read_parquet([{recent_paths_sql}], union_by_name=true)
                     WHERE ticker IN ({tickers_sql})
                     QUALIFY ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY ingested_at DESC) = 1
                 """).df()
