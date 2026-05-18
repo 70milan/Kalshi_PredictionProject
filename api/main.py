@@ -29,6 +29,7 @@ import base64
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from kelly_math import calculate_kelly
+from risk_guardrails import apply_theme_caps
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 
@@ -220,7 +221,8 @@ def get_intelligence():
                     b.ingested_at,
                     b.recommended_side,
                     m.yes_bid_dollars AS live_yes_bid,
-                    m.yes_ask_dollars AS live_yes_ask
+                    m.yes_ask_dollars AS live_yes_ask,
+                    m.close_time AS close_time
                 FROM (
                     SELECT
                         *,
@@ -258,7 +260,8 @@ def get_intelligence():
                     ingested_at,
                     recommended_side,
                     NULL AS live_yes_bid,
-                    NULL AS live_yes_ask
+                    NULL AS live_yes_ask,
+                    NULL AS close_time
                 FROM (
                     SELECT
                         *,
@@ -297,6 +300,30 @@ def get_intelligence():
     except Exception as e:
         print(f"[API ERROR] Failed to fetch Kalshi balance: {e}")
 
+    # Calibration sample for Kelly sizing: how many briefed markets have resolved.
+    # Until this reaches MIN_CALIBRATION_SAMPLES, kelly_math clamps every bet flat
+    # (fix A). Probe fails safe to 0 — staying clamped is the conservative default.
+    resolved_count = 0
+    try:
+        settled_present = os.path.exists(SETTLED_MARKETS_DIR) and any(
+            f.endswith(".parquet") for f in os.listdir(SETTLED_MARKETS_DIR)
+        )
+        if settled_present:
+            settled_glob_r = os.path.join(SETTLED_MARKETS_DIR, "*.parquet").replace("\\", "/")
+            briefs_glob_r  = os.path.join(BRIEFS_PATH, "*.parquet").replace("\\", "/")
+            con_r = duckdb.connect()
+            resolved_count = int(con_r.execute(f"""
+                SELECT COUNT(DISTINCT s.ticker)
+                FROM read_parquet('{settled_glob_r}', union_by_name=true) s
+                WHERE s.ticker IN (
+                    SELECT DISTINCT ticker
+                    FROM read_parquet('{briefs_glob_r}', union_by_name=true)
+                )
+            """).fetchone()[0])
+            con_r.close()
+    except Exception as e:
+        print(f"[API] resolved-count probe failed (staying clamped): {e}")
+
     briefs = []
     for _, row in df.iterrows():
         yes_bid    = float(row.get("current_odds", 0.5) or 0.5)
@@ -325,12 +352,24 @@ def get_intelligence():
         if confidence < market_prob + MIN_EDGE:
             continue  # edge too thin to trust given LLM calibration
 
+        # Days until the market resolves — feeds the short-dated haircut (fix E).
+        close_time_raw = row.get("close_time")
+        days_to_resolution = None
+        if close_time_raw is not None and not pd.isna(close_time_raw):
+            try:
+                ct = pd.to_datetime(close_time_raw, utc=True)
+                days_to_resolution = (ct - pd.Timestamp.now(tz="UTC")).total_seconds() / 86400.0
+            except Exception:
+                days_to_resolution = None
+
         # Kelly must be computed on the actual side being purchased.
         # For NO bets: price = 1 - yes_bid (how much NO costs per contract).
-        if recommended_side == "no":
-            kelly = calculate_kelly(confidence, 1.0 - current_yes_bid, active_bankroll)
-        else:
-            kelly = calculate_kelly(confidence, current_yes_bid, active_bankroll)
+        # resolved_count + days_to_resolution drive the calibration cap and the
+        # short-dated haircut inside calculate_kelly (fixes A, E).
+        side_price = (1.0 - current_yes_bid) if recommended_side == "no" else current_yes_bid
+        kelly = calculate_kelly(confidence, side_price, active_bankroll,
+                                resolved_count=resolved_count,
+                                days_to_resolution=days_to_resolution)
         briefs.append({
             "ticker":            str(row.get("ticker", "")),
             "title":             str(row.get("title", "")),
@@ -351,6 +390,10 @@ def get_intelligence():
             "live_yes_ask":      float(row["live_yes_ask"]) if row.get("live_yes_ask") is not None and not pd.isna(row.get("live_yes_ask")) else None,
         })
 
+    # Fix C: cap total exposure per correlated theme. Without this, two Powell
+    # bets each at the per-trade cap stacked to ~10% of bankroll on one event.
+    briefs = apply_theme_caps(briefs, active_bankroll)
+
     # Report when the active-market list was last refreshed
     bronze_age = None
     if os.path.exists(BRONZE_LATEST_PATH):
@@ -362,6 +405,7 @@ def get_intelligence():
         "safe_mode":            SAFE_MODE,
         "bankroll":             active_bankroll,
         "count":                len(briefs),
+        "resolved_count":       resolved_count,
         "as_of":                datetime.now(timezone.utc).isoformat(),
         "active_markets_as_of": bronze_age,   # when latest.parquet was last written
         "active_market_filter": os.path.exists(BRONZE_LATEST_PATH),
@@ -800,11 +844,11 @@ def get_backtest(days: int = 30, sim_bankroll: float = 1000.0, current_system_on
                 pass
 
         # Live prices for open positions
-        live_df = pd.DataFrame(columns=["ticker", "live_yes_bid"])
+        live_df = pd.DataFrame(columns=["ticker", "live_yes_bid", "close_time"])
         if os.path.exists(BRONZE_LATEST_PATH):
             try:
                 live_df = con.execute(f"""
-                    SELECT ticker, yes_bid_dollars AS live_yes_bid
+                    SELECT ticker, yes_bid_dollars AS live_yes_bid, close_time
                     FROM read_parquet('{bronze_latest}')
                     WHERE ticker IN ({tickers_sql})
                 """).df()
@@ -819,8 +863,14 @@ def get_backtest(days: int = 30, sim_bankroll: float = 1000.0, current_system_on
 
     settled_map = dict(zip(settled_df["ticker"], settled_df["result"])) if not settled_df.empty else {}
     live_map    = dict(zip(live_df["ticker"], live_df["live_yes_bid"])) if not live_df.empty else {}
+    close_map   = (dict(zip(live_df["ticker"], live_df["close_time"]))
+                   if not live_df.empty and "close_time" in live_df.columns else {})
 
-    rows = []
+    # Calibration sample for fix A: resolved markets the system briefed.
+    resolved_count = len(settled_map)
+
+    # Pass 1: resolve each brief's outcome and size it with Kelly (guardrails on).
+    staged = []
     excluded = 0
     for _, b in briefs_df.iterrows():
         ticker     = b["ticker"]
@@ -843,6 +893,7 @@ def get_backtest(days: int = 30, sim_bankroll: float = 1000.0, current_system_on
         # Outcome resolution
         result = settled_map.get(ticker)   # "yes", "no", or None
         live_yes = live_map.get(ticker)
+        days_to_resolution = None
 
         if result is not None:
             # Market has settled
@@ -855,37 +906,74 @@ def get_backtest(days: int = 30, sim_bankroll: float = 1000.0, current_system_on
             live_yes = float(live_yes)
             current_price = live_yes if side == "yes" else (1.0 - live_yes)
             pnl_per = current_price - entry_price
+            ct = close_map.get(ticker)
+            if ct is not None and not pd.isna(ct):
+                try:
+                    ctp = pd.to_datetime(ct, utc=True)
+                    days_to_resolution = (ctp - pd.Timestamp.now(tz="UTC")).total_seconds() / 86400.0
+                except Exception:
+                    days_to_resolution = None
         else:
             outcome = "UNKNOWN"
             current_price = None
             pnl_per = None
 
-        # Kelly-sized simulated P&L
+        kelly_info = calculate_kelly(confidence, entry_price, sim_bankroll,
+                                     resolved_count=resolved_count,
+                                     days_to_resolution=days_to_resolution)
+
+        staged.append({
+            "ticker":        ticker,
+            "title":         str(b.get("title", "")),
+            "kelly":         kelly_info,
+            "side":          side,
+            "entry_yes":     entry_yes,
+            "entry_price":   entry_price,
+            "confidence":    confidence,
+            "outcome":       outcome,
+            "current_price": current_price,
+            "pnl_per":       pnl_per,
+            "brief_date":    str(b["ingested_at"])[:10],
+            "verdict":       str(b.get("verdict", ""))[:120],
+        })
+
+    # Fix C: cap simulated exposure per correlated theme before computing P&L.
+    staged = apply_theme_caps(staged, sim_bankroll)
+
+    # Pass 2: simulated P&L from the guardrail- and theme-capped Kelly bet.
+    rows = []
+    for s in staged:
+        kelly_info  = s["kelly"]
+        entry_price = s["entry_price"]
+        pnl_per     = s["pnl_per"]
+
         sim_pnl = None
-        kelly_info = calculate_kelly(confidence, entry_price, sim_bankroll)
-        if pnl_per is not None and kelly_info["edge_detected"]:
-            contracts = int(kelly_info["suggested_bet_usd"] / entry_price) if entry_price > 0 else 0
-            sim_pnl = round(contracts * pnl_per, 2)
-        elif pnl_per is not None:
-            # No edge per Kelly, but still show flat-$10 simulation so the row has data
-            contracts = int(10.0 / entry_price) if entry_price > 0 else 0
+        if pnl_per is not None:
+            if kelly_info["kelly_fraction"] > 0:
+                # Had a Kelly edge — size from the (guardrail/theme) capped bet.
+                # A theme-zeroed bet correctly sims $0 here.
+                contracts = int(kelly_info["suggested_bet_usd"] / entry_price) if entry_price > 0 else 0
+            else:
+                # No edge — flat-$10 reference simulation so the row still has data.
+                contracts = int(10.0 / entry_price) if entry_price > 0 else 0
             sim_pnl = round(contracts * pnl_per, 2)
 
         rows.append({
-            "ticker":          ticker,
-            "title":           str(b.get("title", "")),
-            "brief_date":      str(b["ingested_at"])[:10],
-            "recommended_side": side,
-            "entry_yes_bid":   round(entry_yes, 4),
+            "ticker":          s["ticker"],
+            "title":           s["title"],
+            "brief_date":      s["brief_date"],
+            "recommended_side": s["side"],
+            "entry_yes_bid":   round(s["entry_yes"], 4),
             "entry_price":     round(entry_price, 4),
-            "confidence":      round(confidence, 4),
-            "outcome":         outcome,
-            "current_price":   round(current_price, 4) if current_price is not None else None,
+            "confidence":      round(s["confidence"], 4),
+            "outcome":         s["outcome"],
+            "current_price":   round(s["current_price"], 4) if s["current_price"] is not None else None,
             "pnl_per_contract": round(pnl_per, 4) if pnl_per is not None else None,
             "kelly_edge":      kelly_info["edge_detected"],
             "kelly_fraction":  kelly_info["kelly_fraction"],
+            "theme":           s.get("theme"),
             "sim_pnl":         sim_pnl,
-            "verdict":         str(b.get("verdict", ""))[:120],
+            "verdict":         s["verdict"],
         })
 
     # Aggregate stats

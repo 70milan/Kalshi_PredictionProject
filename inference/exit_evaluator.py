@@ -30,7 +30,8 @@ EXIT_SIGNALS_PATH  = os.path.join(PROJECT_ROOT, "data", "gold", "exit_signals")
 
 # Tunable thresholds (Phase 1 defaults — refine after outcome attribution ships)
 PROFIT_LOCK_CAPTURE = 0.80   # take profit at 80% of max possible gain
-STOP_LOSS_THRESHOLD = 0.20   # cut at 20c against entry
+STOP_LOSS_THRESHOLD = 0.20   # cut at 20c absolute against entry
+STOP_LOSS_PCT       = 0.25   # OR cut at 25% drawdown of cost basis (fix D, 2026-05-18)
 TIME_DECAY_HOURS    = 24     # resolves within X hours
 TIME_DECAY_PNL_BAND = 0.05   # AND P&L within +/-5c = "no momentum, exit"
 
@@ -70,11 +71,20 @@ def evaluate_position(pos, live_yes_bid, live_yes_ask, close_time, today_brief):
             'capture_pct':           round(capture_pct, 4),
         }
 
-    # TRIGGER 2: STOP LOSS
-    if unrealized_pnl_per <= -STOP_LOSS_THRESHOLD:
+    # TRIGGER 2: STOP LOSS — fires on EITHER an absolute move OR a % drawdown.
+    # The absolute 20c rule misses cheap contracts: a 45c->28c NO bet is only
+    # 17c (under 20c) but a 38% loss of cost basis. The % rule catches it.
+    drawdown_pct = (unrealized_pnl_per / entry_price) if entry_price > 0 else 0.0
+    hit_absolute = unrealized_pnl_per <= -STOP_LOSS_THRESHOLD
+    hit_pct      = drawdown_pct <= -STOP_LOSS_PCT
+    if hit_absolute or hit_pct:
+        if hit_pct and not hit_absolute:
+            why = f"Down {abs(drawdown_pct)*100:.0f}% of cost basis. Thesis broken."
+        else:
+            why = f"Market moved {abs(unrealized_pnl_per)*100:.0f}c against entry. Thesis broken."
         return {
             'action':                'SELL_LOSS',
-            'reason':                f"Market moved {abs(unrealized_pnl_per)*100:.0f}c against entry. Thesis broken.",
+            'reason':                why,
             'urgency':               5,
             'suggested_exit_price':  round(current_value, 4),
             'unrealized_pnl':        round(total_pnl, 4),
