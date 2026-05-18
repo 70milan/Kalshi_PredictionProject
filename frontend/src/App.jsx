@@ -192,34 +192,22 @@ export default function App() {
 
   return (
     <>
-      {readonlyMode && (
-        <div style={{
-          background: 'var(--red-dim)',
-          color: 'var(--red)',
-          textAlign: 'center',
-          padding: '0.45rem 1rem',
-          fontSize: '0.72rem',
-          fontWeight: 700,
-          letterSpacing: '0.07em',
-          borderBottom: '1px solid var(--red)',
-          position: 'sticky',
-          top: 0,
-          zIndex: 1000,
-        }}>
-          READ-ONLY — Trading disabled on public view
-        </div>
-      )}
       {/* HEADER */}
       <header className="header">
         <div className="header-brand">
-          <div className="header-logo">P</div>
+          <div className="header-logo">K</div>
           <div>
-            <div className="header-title">PredictIQ</div>
+            <div className="header-title">Kalshi Custom Predictions</div>
             <div className="header-subtitle">Predictive Market Movements</div>
           </div>
         </div>
 
         <div className="header-meta">
+          {readonlyMode && (
+            <span style={{ fontSize: '0.62rem', color: 'var(--text-muted)', fontFamily: 'monospace', letterSpacing: '0.06em', opacity: 0.7 }}>
+              view only
+            </span>
+          )}
           {/* BACKTEST BUTTON */}
           <button
             className="positions-header-btn"
@@ -789,7 +777,7 @@ export default function App() {
         {loading ? (
           <div className="loading-state">
             <div className="spinner" />
-            Connecting to PredictIQ Intelligence API…
+            Connecting…
           </div>
         ) : displayBriefs.length === 0 ? (
           <div className="empty-state">
