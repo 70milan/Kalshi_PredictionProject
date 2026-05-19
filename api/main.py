@@ -1016,32 +1016,50 @@ def get_backtest(days: int = 30, sim_bankroll: float = 1000.0, current_system_on
 # ─────────────────────────────────────────────
 
 @app.get("/api/backtest/positions")
-def get_position_backtest():
+def get_position_backtest(days: int = 30, sim_bankroll: float = 1000.0, current_system_only: bool = False):
     """
-    Strategy simulation over actual trades in position_ledger.parquet.
+    Strategy simulation: applies TAKE_PROFIT_ROI / STOP_LOSS_ROI triggers
+    to the same signal backtest rows (from intelligence briefs), replaying
+    the bronze price history from each brief date forward.
 
-    Replays bronze price history per ticker from entry_time forward,
-    applies the current TAKE_PROFIT_ROI / STOP_LOSS_ROI thresholds
-    (imported live from exit_evaluator.py), and reports what would have
-    happened: PROFIT_EXIT, STOP_EXIT, SETTLED_WIN, SETTLED_LOSS, or OPEN.
+    Answers: if we had taken every briefed signal and used 20%/17% exit rules,
+    what would have happened to each trade?
     """
-    if not os.path.exists(LEDGER_PATH):
-        return {"trades": [], "stats": {}}
-
-    ledger = pd.read_parquet(LEDGER_PATH)
-    if ledger.empty:
-        return {"trades": [], "stats": {}}
-
-    # Import thresholds live so they stay in sync with exit_evaluator.py
     from inference.exit_evaluator import TAKE_PROFIT_ROI, STOP_LOSS_ROI
 
-    tickers = ledger["ticker"].tolist()
-    tickers_sql = ", ".join(f"'{t}'" for t in tickers)
+    if not os.path.exists(BRIEFS_PATH):
+        return {"trades": [], "stats": {}}
 
     con = duckdb.connect()
     try:
-        bronze_glob = os.path.join(PROJECT_ROOT, "data", "bronze", "kalshi_markets", "open", "*.parquet").replace("\\", "/")
+        parquet_glob  = os.path.join(BRIEFS_PATH, "*.parquet").replace("\\", "/")
+        bronze_glob   = os.path.join(PROJECT_ROOT, "data", "bronze", "kalshi_markets", "open", "*.parquet").replace("\\", "/")
 
+        # One brief per ticker (highest confidence), same window as signal backtest
+        briefs_df = con.execute(f"""
+            SELECT ticker, title, recommended_side, current_odds, confidence_score, ingested_at
+            FROM (
+                SELECT *,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY ticker
+                           ORDER BY confidence_score DESC, ingested_at DESC
+                       ) AS rn
+                FROM read_parquet('{parquet_glob}', union_by_name=true)
+                WHERE CAST(ingested_at AS DATE) >= CURRENT_DATE - INTERVAL {days} DAY
+                  AND verdict NOT LIKE '%Error%'
+                  AND verdict IS NOT NULL AND verdict != ''
+                  AND recommended_side IN ('yes', 'no')
+            )
+            WHERE rn = 1
+        """).df()
+
+        if briefs_df.empty:
+            return {"trades": [], "stats": {}}
+
+        tickers = briefs_df["ticker"].tolist()
+        tickers_sql = ", ".join(f"'{t}'" for t in tickers)
+
+        # Full bronze price history for all signal tickers
         history_df = con.execute(f"""
             SELECT ticker,
                    yes_bid_dollars,
@@ -1052,7 +1070,7 @@ def get_position_backtest():
             ORDER BY ticker, ts
         """).df()
 
-        # Settled outcomes
+        # Settled outcomes (50 most recent files)
         settled_df = pd.DataFrame(columns=["ticker", "result"])
         settled_files = [f for f in os.listdir(SETTLED_MARKETS_DIR) if f.endswith(".parquet")] if os.path.exists(SETTLED_MARKETS_DIR) else []
         if settled_files:
@@ -1075,7 +1093,7 @@ def get_position_backtest():
             except Exception:
                 pass
 
-        # Live prices for still-open positions
+        # Live prices for still-open signals
         live_df = pd.DataFrame(columns=["ticker", "yes_bid_dollars", "yes_ask_dollars"])
         if os.path.exists(BRONZE_LATEST_PATH):
             try:
@@ -1094,33 +1112,46 @@ def get_position_backtest():
         con.close()
 
     settled_map = dict(zip(settled_df["ticker"], settled_df["result"])) if not settled_df.empty else {}
-    live_map = {r["ticker"]: r for _, r in live_df.iterrows()} if not live_df.empty else {}
+    live_map    = {r["ticker"]: r for _, r in live_df.iterrows()} if not live_df.empty else {}
 
     trades = []
-    for _, pos in ledger.iterrows():
-        ticker     = str(pos["ticker"])
-        side       = str(pos["side"])
-        entry_price = float(pos["entry_price"])
-        qty        = float(pos["qty"])
-        entry_time_raw = pos.get("entry_time")
-        title_map_local = _get_titles_from_history([ticker])
-        title = title_map_local.get(ticker, ticker)
+    for _, b in briefs_df.iterrows():
+        ticker      = str(b["ticker"])
+        side        = str(b["recommended_side"])
+        entry_yes   = float(b["current_odds"])
+        confidence  = float(b["confidence_score"])
+        entry_price = entry_yes if side == "yes" else (1.0 - entry_yes)
+        title       = str(b.get("title", ticker))
+        brief_date  = str(b["ingested_at"])[:10]
 
-        # Normalise entry_time to UTC-aware timestamp
+        # Apply current-pipeline gates if requested
+        if current_system_only:
+            if entry_yes < 0.25 or entry_yes > 0.75:
+                continue
+            market_prob = entry_yes if side == "yes" else (1.0 - entry_yes)
+            if confidence < market_prob + 0.10:
+                continue
+
+        # Kelly-sized qty for sim P&L (mirrors signal backtest)
+        kelly_info = calculate_kelly(confidence, entry_price, sim_bankroll, resolved_count=len(settled_map))
+        if kelly_info["kelly_fraction"] > 0:
+            qty = int(kelly_info["suggested_bet_usd"] / entry_price) if entry_price > 0 else 0
+        else:
+            qty = int(10.0 / entry_price) if entry_price > 0 else 0
+
+        # Entry timestamp — start walking from here
         entry_ts = None
-        if entry_time_raw is not None:
-            try:
-                entry_ts = pd.to_datetime(entry_time_raw, utc=True)
-            except Exception:
-                pass
+        try:
+            entry_ts = pd.to_datetime(b["ingested_at"], utc=True)
+        except Exception:
+            pass
 
-        # Filter history to this ticker, from entry onwards
+        # Walk price history from brief date, apply exit triggers
         ticker_hist = history_df[history_df["ticker"] == ticker].copy()
         if entry_ts is not None:
             ticker_hist = ticker_hist[ticker_hist["ts"] >= entry_ts]
         ticker_hist = ticker_hist.sort_values("ts")
 
-        # Walk through price snapshots, apply exit triggers
         exit_action = None
         exit_price  = None
         exit_ts     = None
@@ -1145,13 +1176,11 @@ def get_position_backtest():
                 exit_ts     = snap["ts"]
                 break
 
-        # Determine outcome
         settled_result = settled_map.get(ticker)
 
         if exit_action:
             outcome = exit_action
-            pnl_per = exit_price - entry_price
-            pnl     = round(pnl_per * qty, 2)
+            pnl     = round((exit_price - entry_price) * qty, 2)
         elif settled_result:
             won     = (settled_result == side)
             outcome = "SETTLED_WIN" if won else "SETTLED_LOSS"
@@ -1165,10 +1194,10 @@ def get_position_backtest():
                 yes_bid = float(live["yes_bid_dollars"])
                 yes_ask = float(live["yes_ask_dollars"])
                 current_value = yes_bid if side == "yes" else (1.0 - yes_ask)
-                pnl = round((current_value - entry_price) * qty, 2)
+                pnl        = round((current_value - entry_price) * qty, 2)
                 exit_price = round(current_value, 4)
             else:
-                pnl = None
+                pnl        = None
                 exit_price = None
 
         trades.append({
@@ -1176,8 +1205,10 @@ def get_position_backtest():
             "title":        title,
             "side":         side,
             "entry_price":  round(entry_price, 4),
+            "entry_yes":    round(entry_yes, 4),
+            "confidence":   round(confidence, 4),
             "qty":          qty,
-            "entry_time":   str(entry_time_raw)[:10] if entry_time_raw else None,
+            "brief_date":   brief_date,
             "outcome":      outcome,
             "exit_price":   round(exit_price, 4) if exit_price is not None else None,
             "exit_time":    str(exit_ts)[:10] if exit_ts is not None else None,
@@ -1185,7 +1216,8 @@ def get_position_backtest():
             "peak_roi_pct": round(peak_roi * 100, 1),
         })
 
-    # Summary stats
+    trades.sort(key=lambda t: t["brief_date"], reverse=True)
+
     profit_exits   = [t for t in trades if t["outcome"] == "PROFIT_EXIT"]
     stop_exits     = [t for t in trades if t["outcome"] == "STOP_EXIT"]
     settled_wins   = [t for t in trades if t["outcome"] == "SETTLED_WIN"]
@@ -1197,25 +1229,26 @@ def get_position_backtest():
     closed = wins + losses
     win_rate = round(len(wins) / len(closed), 4) if closed else None
 
-    with_pnl = [t for t in trades if t["pnl"] is not None]
+    with_pnl  = [t for t in trades if t["pnl"] is not None]
     total_pnl = round(sum(t["pnl"] for t in with_pnl), 2)
 
-    stats = {
-        "total":          len(trades),
-        "profit_exits":   len(profit_exits),
-        "stop_exits":     len(stop_exits),
-        "settled_wins":   len(settled_wins),
-        "settled_losses": len(settled_losses),
-        "open":           len(open_trades),
-        "wins":           len(wins),
-        "losses":         len(losses),
-        "win_rate":       win_rate,
-        "total_pnl":      total_pnl,
-        "take_profit_pct": round(TAKE_PROFIT_ROI * 100),
-        "stop_loss_pct":   round(STOP_LOSS_ROI * 100),
+    return {
+        "trades": trades,
+        "stats": {
+            "total":           len(trades),
+            "profit_exits":    len(profit_exits),
+            "stop_exits":      len(stop_exits),
+            "settled_wins":    len(settled_wins),
+            "settled_losses":  len(settled_losses),
+            "open":            len(open_trades),
+            "wins":            len(wins),
+            "losses":          len(losses),
+            "win_rate":        win_rate,
+            "total_pnl":       total_pnl,
+            "take_profit_pct": round(TAKE_PROFIT_ROI * 100),
+            "stop_loss_pct":   round(STOP_LOSS_ROI * 100),
+        },
     }
-
-    return {"trades": trades, "stats": stats}
 
 
 # ─────────────────────────────────────────────

@@ -139,16 +139,16 @@ export default function App() {
     finally { setBacktestLoading(false); }
   }, [backtestCurrentOnly]);
 
-  const fetchPositionBacktest = useCallback(async () => {
+  const fetchPositionBacktest = useCallback(async (currentOnly = backtestCurrentOnly) => {
     setPositionBacktestLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/api/backtest/positions`);
+      const res = await fetch(`${API_BASE}/api/backtest/positions?days=30&current_system_only=${currentOnly}`);
       if (!res.ok) return;
       const data = await res.json();
       setPositionBacktestData(data);
     } catch (_) { }
     finally { setPositionBacktestLoading(false); }
-  }, []);
+  }, [backtestCurrentOnly]);
 
   useEffect(() => {
     fetch(`${API_BASE}/api/config`)
@@ -520,7 +520,11 @@ export default function App() {
                 };
                 return (
                   <>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '0.62rem', color: 'var(--text-secondary)', cursor: 'pointer', userSelect: 'none' }}>
+                        <input type="checkbox" checked={backtestCurrentOnly} onChange={e => { const v = e.target.checked; setBacktestCurrentOnly(v); fetchPositionBacktest(v); }} style={{ cursor: 'pointer' }} />
+                        Current pipeline only
+                      </label>
                       <button onClick={() => fetchPositionBacktest()} style={{ padding: '3px 10px', borderRadius: '5px', border: '1px solid var(--border)', fontSize: '0.62rem', cursor: 'pointer', background: 'transparent', color: 'var(--text-muted)' }}>
                         {positionBacktestLoading ? 'Loading…' : 'Refresh'}
                       </button>
