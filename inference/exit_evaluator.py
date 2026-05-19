@@ -2,13 +2,15 @@
 PredictIQ - Exit Evaluator
 ==========================
 Reads position_ledger.parquet, joins live Kalshi prices, and emits
-SELL/HOLD recommendations for each open position based on 4 triggers.
+SELL/HOLD recommendations for each open position based on 6 triggers.
 
 Triggers (evaluated in priority order):
-  1. PROFIT LOCK   — captured >=80% of max possible gain
-  2. STOP LOSS     — market moved >=20c against entry
-  3. THESIS FLIP   — today's brief recommends the opposite side
-  4. TIME DECAY    — resolves <24h with near-zero P&L
+  1. ROI TAKE PROFIT — unrealized gain >= 15% of capital deployed
+  2. ROI STOP LOSS   — unrealized loss >= 9% of capital deployed
+  3. PROFIT LOCK     — captured >=80% of max possible gain (backstop)
+  4. STOP LOSS       — market moved >=20c against entry (backstop)
+  5. THESIS FLIP     — today's brief recommends the opposite side
+  6. TIME DECAY      — resolves <24h with near-zero P&L
 
 Output: data/gold/exit_signals/exits_<timestamp>.parquet
 """
@@ -29,8 +31,10 @@ BRIEFS_PATH        = os.path.join(PROJECT_ROOT, "data", "gold", "intelligence_br
 EXIT_SIGNALS_PATH  = os.path.join(PROJECT_ROOT, "data", "gold", "exit_signals")
 
 # Tunable thresholds (Phase 1 defaults — refine after outcome attribution ships)
-PROFIT_LOCK_CAPTURE = 0.80   # take profit at 80% of max possible gain
-STOP_LOSS_THRESHOLD = 0.20   # cut at 20c against entry
+TAKE_PROFIT_ROI     = 0.15   # sell when unrealized gain >= 15% of entry price
+STOP_LOSS_ROI       = 0.09   # cut when unrealized loss >= 9% of entry price
+PROFIT_LOCK_CAPTURE = 0.80   # backstop: take profit at 80% of max possible gain
+STOP_LOSS_THRESHOLD = 0.20   # backstop: cut at 20c against entry
 TIME_DECAY_HOURS    = 24     # resolves within X hours
 TIME_DECAY_PNL_BAND = 0.05   # AND P&L within +/-5c = "no momentum, exit"
 
@@ -57,9 +61,34 @@ def evaluate_position(pos, live_yes_bid, live_yes_ask, close_time, today_brief):
     unrealized_pnl_per = current_value - entry_price
     max_gain_per       = 1.0 - entry_price
     capture_pct        = (unrealized_pnl_per / max_gain_per) if max_gain_per > 0 else 0.0
+    roi_pct            = (unrealized_pnl_per / entry_price)  if entry_price > 0 else 0.0
     total_pnl          = unrealized_pnl_per * qty
 
-    # TRIGGER 1: PROFIT LOCK
+    # TRIGGER 1: ROI TAKE PROFIT
+    if roi_pct >= TAKE_PROFIT_ROI:
+        return {
+            'action':                'SELL_PROFIT',
+            'reason':                f"ROI +{roi_pct*100:.1f}% hit take-profit target ({TAKE_PROFIT_ROI*100:.0f}%). Lock it in.",
+            'urgency':               4,
+            'suggested_exit_price':  round(current_value, 4),
+            'unrealized_pnl':        round(total_pnl, 4),
+            'capture_pct':           round(capture_pct, 4),
+            'roi_pct':               round(roi_pct, 4),
+        }
+
+    # TRIGGER 2: ROI STOP LOSS
+    if roi_pct <= -STOP_LOSS_ROI:
+        return {
+            'action':                'SELL_LOSS',
+            'reason':                f"ROI {roi_pct*100:.1f}% hit stop-loss ({STOP_LOSS_ROI*100:.0f}%). Cut exposure.",
+            'urgency':               5,
+            'suggested_exit_price':  round(current_value, 4),
+            'unrealized_pnl':        round(total_pnl, 4),
+            'capture_pct':           round(capture_pct, 4),
+            'roi_pct':               round(roi_pct, 4),
+        }
+
+    # TRIGGER 3: PROFIT LOCK (backstop — 80% of max possible gain)
     if capture_pct >= PROFIT_LOCK_CAPTURE:
         return {
             'action':                'SELL_PROFIT',
@@ -68,9 +97,10 @@ def evaluate_position(pos, live_yes_bid, live_yes_ask, close_time, today_brief):
             'suggested_exit_price':  round(current_value, 4),
             'unrealized_pnl':        round(total_pnl, 4),
             'capture_pct':           round(capture_pct, 4),
+            'roi_pct':               round(roi_pct, 4),
         }
 
-    # TRIGGER 2: STOP LOSS
+    # TRIGGER 4: STOP LOSS (backstop — 20c absolute drop)
     if unrealized_pnl_per <= -STOP_LOSS_THRESHOLD:
         return {
             'action':                'SELL_LOSS',
@@ -79,9 +109,10 @@ def evaluate_position(pos, live_yes_bid, live_yes_ask, close_time, today_brief):
             'suggested_exit_price':  round(current_value, 4),
             'unrealized_pnl':        round(total_pnl, 4),
             'capture_pct':           round(capture_pct, 4),
+            'roi_pct':               round(roi_pct, 4),
         }
 
-    # TRIGGER 3: THESIS FLIP — today's brief contradicts our position
+    # TRIGGER 5: THESIS FLIP — today's brief contradicts our position
     if today_brief is not None:
         new_side = today_brief.get('recommended_side')
         verdict  = str(today_brief.get('verdict', '')).lower()
@@ -94,9 +125,10 @@ def evaluate_position(pos, live_yes_bid, live_yes_ask, close_time, today_brief):
                 'suggested_exit_price':  round(current_value, 4),
                 'unrealized_pnl':        round(total_pnl, 4),
                 'capture_pct':           round(capture_pct, 4),
+                'roi_pct':               round(roi_pct, 4),
             }
 
-    # TRIGGER 4: TIME DECAY
+    # TRIGGER 6: TIME DECAY
     if close_time is not None:
         try:
             close_dt = pd.to_datetime(close_time)
@@ -111,6 +143,7 @@ def evaluate_position(pos, live_yes_bid, live_yes_ask, close_time, today_brief):
                     'suggested_exit_price':  round(current_value, 4),
                     'unrealized_pnl':        round(total_pnl, 4),
                     'capture_pct':           round(capture_pct, 4),
+                    'roi_pct':               round(roi_pct, 4),
                 }
         except Exception:
             pass
@@ -118,11 +151,12 @@ def evaluate_position(pos, live_yes_bid, live_yes_ask, close_time, today_brief):
     # No triggers fired
     return {
         'action':                'HOLD',
-        'reason':                f"P&L: ${total_pnl:+.2f} ({capture_pct*100:+.0f}% of max). No exit trigger.",
+        'reason':                f"P&L: ${total_pnl:+.2f} (ROI {roi_pct*100:+.1f}%). No exit trigger.",
         'urgency':               0,
         'suggested_exit_price':  round(current_value, 4),
         'unrealized_pnl':        round(total_pnl, 4),
         'capture_pct':           round(capture_pct, 4),
+        'roi_pct':               round(roi_pct, 4),
     }
 
 
