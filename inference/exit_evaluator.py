@@ -31,8 +31,8 @@ BRIEFS_PATH        = os.path.join(PROJECT_ROOT, "data", "gold", "intelligence_br
 EXIT_SIGNALS_PATH  = os.path.join(PROJECT_ROOT, "data", "gold", "exit_signals")
 
 # Tunable thresholds (Phase 1 defaults — refine after outcome attribution ships)
-TAKE_PROFIT_ROI     = 0.15   # sell when unrealized gain >= 15% of entry price
-STOP_LOSS_ROI       = 0.09   # cut when unrealized loss >= 9% of entry price
+TAKE_PROFIT_ROI     = 0.20   # sell when unrealized gain >= 20% of entry price
+STOP_LOSS_ROI       = 0.17   # cut when unrealized loss >= 17% of entry price
 PROFIT_LOCK_CAPTURE = 0.80   # backstop: take profit at 80% of max possible gain
 STOP_LOSS_THRESHOLD = 0.20   # backstop: cut at 20c against entry
 TIME_DECAY_HOURS    = 24     # resolves within X hours
