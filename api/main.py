@@ -1012,6 +1012,213 @@ def get_backtest(days: int = 30, sim_bankroll: float = 1000.0, current_system_on
 
 
 # ─────────────────────────────────────────────
+# POSITION STRATEGY BACKTEST
+# ─────────────────────────────────────────────
+
+@app.get("/api/backtest/positions")
+def get_position_backtest():
+    """
+    Strategy simulation over actual trades in position_ledger.parquet.
+
+    Replays bronze price history per ticker from entry_time forward,
+    applies the current TAKE_PROFIT_ROI / STOP_LOSS_ROI thresholds
+    (imported live from exit_evaluator.py), and reports what would have
+    happened: PROFIT_EXIT, STOP_EXIT, SETTLED_WIN, SETTLED_LOSS, or OPEN.
+    """
+    if not os.path.exists(LEDGER_PATH):
+        return {"trades": [], "stats": {}}
+
+    ledger = pd.read_parquet(LEDGER_PATH)
+    if ledger.empty:
+        return {"trades": [], "stats": {}}
+
+    # Import thresholds live so they stay in sync with exit_evaluator.py
+    from inference.exit_evaluator import TAKE_PROFIT_ROI, STOP_LOSS_ROI
+
+    tickers = ledger["ticker"].tolist()
+    tickers_sql = ", ".join(f"'{t}'" for t in tickers)
+
+    con = duckdb.connect()
+    try:
+        bronze_glob = os.path.join(PROJECT_ROOT, "data", "bronze", "kalshi_markets", "open", "*.parquet").replace("\\", "/")
+
+        history_df = con.execute(f"""
+            SELECT ticker,
+                   yes_bid_dollars,
+                   yes_ask_dollars,
+                   CAST(ingested_at AS TIMESTAMP WITH TIME ZONE) AS ts
+            FROM read_parquet('{bronze_glob}', union_by_name=true)
+            WHERE ticker IN ({tickers_sql})
+            ORDER BY ticker, ts
+        """).df()
+
+        # Settled outcomes
+        settled_df = pd.DataFrame(columns=["ticker", "result"])
+        settled_files = [f for f in os.listdir(SETTLED_MARKETS_DIR) if f.endswith(".parquet")] if os.path.exists(SETTLED_MARKETS_DIR) else []
+        if settled_files:
+            settled_files_recent = sorted(
+                settled_files,
+                key=lambda f: os.path.getmtime(os.path.join(SETTLED_MARKETS_DIR, f)),
+                reverse=True
+            )[:50]
+            recent_paths_sql = ", ".join(
+                f"'{os.path.join(SETTLED_MARKETS_DIR, f).replace(chr(92), '/')}'"
+                for f in settled_files_recent
+            )
+            try:
+                settled_df = con.execute(f"""
+                    SELECT ticker, LOWER(result) AS result
+                    FROM read_parquet([{recent_paths_sql}], union_by_name=true)
+                    WHERE ticker IN ({tickers_sql})
+                    QUALIFY ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY ingested_at DESC) = 1
+                """).df()
+            except Exception:
+                pass
+
+        # Live prices for still-open positions
+        live_df = pd.DataFrame(columns=["ticker", "yes_bid_dollars", "yes_ask_dollars"])
+        if os.path.exists(BRONZE_LATEST_PATH):
+            try:
+                live_df = con.execute(f"""
+                    SELECT ticker, yes_bid_dollars, yes_ask_dollars
+                    FROM read_parquet('{BRONZE_LATEST_PATH.replace(chr(92), "/")}')
+                    WHERE ticker IN ({tickers_sql})
+                """).df()
+            except Exception:
+                pass
+
+    except Exception as e:
+        print(f"[POSITION BACKTEST ERROR] {e}")
+        return {"trades": [], "stats": {}, "error": str(e)}
+    finally:
+        con.close()
+
+    settled_map = dict(zip(settled_df["ticker"], settled_df["result"])) if not settled_df.empty else {}
+    live_map = {r["ticker"]: r for _, r in live_df.iterrows()} if not live_df.empty else {}
+
+    trades = []
+    for _, pos in ledger.iterrows():
+        ticker     = str(pos["ticker"])
+        side       = str(pos["side"])
+        entry_price = float(pos["entry_price"])
+        qty        = float(pos["qty"])
+        entry_time_raw = pos.get("entry_time")
+        title_map_local = _get_titles_from_history([ticker])
+        title = title_map_local.get(ticker, ticker)
+
+        # Normalise entry_time to UTC-aware timestamp
+        entry_ts = None
+        if entry_time_raw is not None:
+            try:
+                entry_ts = pd.to_datetime(entry_time_raw, utc=True)
+            except Exception:
+                pass
+
+        # Filter history to this ticker, from entry onwards
+        ticker_hist = history_df[history_df["ticker"] == ticker].copy()
+        if entry_ts is not None:
+            ticker_hist = ticker_hist[ticker_hist["ts"] >= entry_ts]
+        ticker_hist = ticker_hist.sort_values("ts")
+
+        # Walk through price snapshots, apply exit triggers
+        exit_action = None
+        exit_price  = None
+        exit_ts     = None
+        peak_roi    = 0.0
+
+        for _, snap in ticker_hist.iterrows():
+            yes_bid = float(snap["yes_bid_dollars"])
+            yes_ask = float(snap["yes_ask_dollars"])
+            current_value = yes_bid if side == "yes" else (1.0 - yes_ask)
+            roi = (current_value - entry_price) / entry_price if entry_price > 0 else 0.0
+            if roi > peak_roi:
+                peak_roi = roi
+
+            if roi >= TAKE_PROFIT_ROI:
+                exit_action = "PROFIT_EXIT"
+                exit_price  = current_value
+                exit_ts     = snap["ts"]
+                break
+            elif roi <= -STOP_LOSS_ROI:
+                exit_action = "STOP_EXIT"
+                exit_price  = current_value
+                exit_ts     = snap["ts"]
+                break
+
+        # Determine outcome
+        settled_result = settled_map.get(ticker)
+
+        if exit_action:
+            outcome = exit_action
+            pnl_per = exit_price - entry_price
+            pnl     = round(pnl_per * qty, 2)
+        elif settled_result:
+            won     = (settled_result == side)
+            outcome = "SETTLED_WIN" if won else "SETTLED_LOSS"
+            pnl_per = (1.0 - entry_price) if won else -entry_price
+            pnl     = round(pnl_per * qty, 2)
+            exit_price = 1.0 if won else 0.0
+        else:
+            outcome = "OPEN"
+            live = live_map.get(ticker)
+            if live is not None:
+                yes_bid = float(live["yes_bid_dollars"])
+                yes_ask = float(live["yes_ask_dollars"])
+                current_value = yes_bid if side == "yes" else (1.0 - yes_ask)
+                pnl = round((current_value - entry_price) * qty, 2)
+                exit_price = round(current_value, 4)
+            else:
+                pnl = None
+                exit_price = None
+
+        trades.append({
+            "ticker":       ticker,
+            "title":        title,
+            "side":         side,
+            "entry_price":  round(entry_price, 4),
+            "qty":          qty,
+            "entry_time":   str(entry_time_raw)[:10] if entry_time_raw else None,
+            "outcome":      outcome,
+            "exit_price":   round(exit_price, 4) if exit_price is not None else None,
+            "exit_time":    str(exit_ts)[:10] if exit_ts is not None else None,
+            "pnl":          pnl,
+            "peak_roi_pct": round(peak_roi * 100, 1),
+        })
+
+    # Summary stats
+    profit_exits   = [t for t in trades if t["outcome"] == "PROFIT_EXIT"]
+    stop_exits     = [t for t in trades if t["outcome"] == "STOP_EXIT"]
+    settled_wins   = [t for t in trades if t["outcome"] == "SETTLED_WIN"]
+    settled_losses = [t for t in trades if t["outcome"] == "SETTLED_LOSS"]
+    open_trades    = [t for t in trades if t["outcome"] == "OPEN"]
+
+    wins   = profit_exits + settled_wins
+    losses = stop_exits + settled_losses
+    closed = wins + losses
+    win_rate = round(len(wins) / len(closed), 4) if closed else None
+
+    with_pnl = [t for t in trades if t["pnl"] is not None]
+    total_pnl = round(sum(t["pnl"] for t in with_pnl), 2)
+
+    stats = {
+        "total":          len(trades),
+        "profit_exits":   len(profit_exits),
+        "stop_exits":     len(stop_exits),
+        "settled_wins":   len(settled_wins),
+        "settled_losses": len(settled_losses),
+        "open":           len(open_trades),
+        "wins":           len(wins),
+        "losses":         len(losses),
+        "win_rate":       win_rate,
+        "total_pnl":      total_pnl,
+        "take_profit_pct": round(TAKE_PROFIT_ROI * 100),
+        "stop_loss_pct":   round(STOP_LOSS_ROI * 100),
+    }
+
+    return {"trades": trades, "stats": stats}
+
+
+# ─────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────
 
