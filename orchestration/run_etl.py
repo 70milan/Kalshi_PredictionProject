@@ -20,12 +20,17 @@ import time
 import subprocess
 import traceback
 from datetime import datetime, timezone
+from dotenv import load_dotenv
 
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from notify import notify_failure, notify_crash
 
 WATERMARK_FILE       = os.path.join(PROJECT_ROOT, "data", ".etl_watermark")
 DAILY_MARKER_FILE    = os.path.join(PROJECT_ROOT, "data", ".daily_settlement_marker")
@@ -128,7 +133,7 @@ def mark_daily_settlement_done():
 # SUBPROCESS RUNNER
 # ─────────────────────────────────────────────
 
-def run_script(script_path, timeout_seconds=600):
+def run_script(script_path, timeout_seconds=600, phase=""):
     """
     Runs a Python script as a child process.
     Returns True on success (exit 0), False otherwise.
@@ -143,21 +148,30 @@ def run_script(script_path, timeout_seconds=600):
             [sys.executable, "-u", script_path],
             cwd=PROJECT_ROOT,
             timeout=timeout_seconds,
+            stderr=subprocess.PIPE,
+            text=True,
         )
         elapsed = time.time() - start
+
+        if result.stderr:
+            print(result.stderr, end="")
 
         if result.returncode == 0:
             print(f"OK ({elapsed:.1f}s)")
             return True
         else:
             print(f"FAILED (exit {result.returncode}, {elapsed:.1f}s)")
+            err = result.stderr.strip()[-400:] if result.stderr.strip() else f"exit code {result.returncode}"
+            notify_failure(script_name, err, phase)
             return False
 
     except subprocess.TimeoutExpired:
         print(f"TIMEOUT ({timeout_seconds}s)")
+        notify_failure(script_name, f"Timed out after {timeout_seconds}s -- no output captured", phase)
         return False
     except Exception as e:
         print(f"ERROR: {e}")
+        notify_failure(script_name, str(e), phase)
         return False
 
 
@@ -199,7 +213,7 @@ def run_etl_cycle():
         print("-" * 40)
         # Generous timeout: cold start + all 7 transforms. Previous separate-script
         # timeouts summed to ~4 hours; ~50 min is plenty for one shared session.
-        pipeline_ok = run_script(SPARK_PIPELINE_SCRIPT, timeout_seconds=3000)
+        pipeline_ok = run_script(SPARK_PIPELINE_SCRIPT, timeout_seconds=3000, phase="Phase 1")
 
         # --- Update watermark ---
         set_watermark()
@@ -209,19 +223,19 @@ def run_etl_cycle():
         # --- Phase 2: Vector Sync ---
         print("\n[Phase 2/3] Vector Bridge Synchronization")
         print("-" * 40)
-        run_script(VECTOR_SYNC_SCRIPT, timeout_seconds=2400)
+        run_script(VECTOR_SYNC_SCRIPT, timeout_seconds=2400, phase="Phase 2")
 
         # --- Phase 3: Inference Engine ---
         print("\n[Phase 3/3] AI Inference & Mispricing Detection")
         print("-" * 40)
-        run_script(INFERENCE_SCRIPT, timeout_seconds=1800)  # 30 min for large market batches
+        run_script(INFERENCE_SCRIPT, timeout_seconds=1800, phase="Phase 3")  # 30 min for large market batches
 
     # --- Phase 4b: Position Ledger + Exit Evaluation (runs EVERY cycle, not gated on bronze)
     # Exits are time-sensitive — prices move regardless of new bronze data.
     print("\n[Phase 4b] Position Ledger + Exit Evaluation")
     print("-" * 40)
-    run_script(LEDGER_SCRIPT, timeout_seconds=120)
-    run_script(EXIT_SCRIPT,   timeout_seconds=120)
+    run_script(LEDGER_SCRIPT, timeout_seconds=120, phase="Phase 4b")
+    run_script(EXIT_SCRIPT,   timeout_seconds=120, phase="Phase 4b")
 
     # --- Phase 5: Daily Settlement (once per day, AFTER transforms) ---
     if should_run_daily_settlement():
@@ -230,7 +244,7 @@ def run_etl_cycle():
         else:
             print("\n[Phase 5/5] Kalshi Daily Settlement Sweep")
             print("-" * 40)
-            if run_script(DAILY_SETTLEMENT_SCRIPT, timeout_seconds=3600):
+            if run_script(DAILY_SETTLEMENT_SCRIPT, timeout_seconds=3600, phase="Phase 5"):
                 mark_daily_settlement_done()
             else:
                 print("    Settlement failed. Will retry next cycle.")
@@ -260,6 +274,7 @@ def main():
         except Exception:
             print("[ETL ORCHESTRATOR] CRITICAL ERROR:")
             traceback.print_exc()
+            notify_crash(traceback.format_exc())
 
         print(f"[ETL] Sleeping {POLL_INTERVAL}s...")
         time.sleep(POLL_INTERVAL)

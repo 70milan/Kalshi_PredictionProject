@@ -25,6 +25,8 @@ import time
 # ---------------------------------------------------------
 load_dotenv()
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, PROJECT_ROOT)
+from orchestration.notify import notify_brief
 
 GOLD_MISPRICING = os.path.join(PROJECT_ROOT, "data", "gold", "mispricing_scores")
 GOLD_BRIEFS     = os.path.join(PROJECT_ROOT, "data", "gold", "intelligence_briefs")
@@ -307,6 +309,15 @@ def main():
         ts_str   = current_time.strftime("%Y%m%d_%H%M%S")
         out_path = os.path.join(GOLD_BRIEFS, f"brief_{ts_str}_{market['ticker']}.parquet")
         pd.DataFrame([row]).to_parquet(out_path, index=False)
+        display_odds = current_odds if recommended == "yes" else (1.0 - current_odds)
+        notify_brief(
+            ticker=market['ticker'],
+            title=market['title'],
+            side=recommended.upper(),
+            odds=display_odds,
+            confidence=confidence,
+            edge=confidence - market_prob,
+        )
         written += 1
 
         time.sleep(30)  # respect Groq TPM limits between calls
