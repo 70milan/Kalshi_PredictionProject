@@ -37,9 +37,6 @@ export default function App() {
   const [exitsAsOf, setExitsAsOf] = useState(null);
   const [sideFilters, setSideFilters] = useState([]);
   const [showBacktest, setShowBacktest] = useState(false);
-  const [backtestTab, setBacktestTab] = useState('signals');
-  const [backtestData, setBacktestData] = useState(null);
-  const [backtestLoading, setBacktestLoading] = useState(false);
   const [backtestCurrentOnly, setBacktestCurrentOnly] = useState(true);
   const [positionBacktestData, setPositionBacktestData] = useState(null);
   const [positionBacktestLoading, setPositionBacktestLoading] = useState(false);
@@ -128,17 +125,6 @@ export default function App() {
     } catch (_) { }
   }, []);
 
-  const fetchBacktest = useCallback(async (currentOnly = backtestCurrentOnly) => {
-    setBacktestLoading(true);
-    try {
-      const res = await fetch(`${API_BASE}/api/backtest?days=30&current_system_only=${currentOnly}`);
-      if (!res.ok) return;
-      const data = await res.json();
-      setBacktestData(data);
-    } catch (_) { }
-    finally { setBacktestLoading(false); }
-  }, [backtestCurrentOnly]);
-
   const fetchPositionBacktest = useCallback(async (currentOnly = backtestCurrentOnly) => {
     setPositionBacktestLoading(true);
     try {
@@ -225,7 +211,7 @@ export default function App() {
           {/* BACKTEST BUTTON */}
           <button
             className="positions-header-btn"
-            onClick={() => { setShowBacktest(v => !v); if (!backtestData) fetchBacktest(); if (!positionBacktestData) fetchPositionBacktest(); }}
+            onClick={() => { setShowBacktest(v => !v); if (!positionBacktestData) fetchPositionBacktest(); }}
           >
             Backtest
           </button>
@@ -378,139 +364,8 @@ export default function App() {
             <div className="modal-body">
             <div style={{ padding: '0.5rem 1.5rem 0.5rem' }}>
 
-              {/* TAB SWITCHER */}
-              <div style={{ display: 'flex', gap: '0', marginBottom: '1.25rem', borderBottom: '1px solid var(--border)' }}>
-                {[
-                  { key: 'signals', label: 'Signal Backtest' },
-                  { key: 'positions', label: 'Position Strategy' },
-                ].map(tab => (
-                  <button
-                    key={tab.key}
-                    onClick={() => {
-                      setBacktestTab(tab.key);
-                      if (tab.key === 'positions' && !positionBacktestData) fetchPositionBacktest();
-                    }}
-                    style={{
-                      padding: '6px 16px',
-                      fontSize: '0.68rem',
-                      fontWeight: backtestTab === tab.key ? 700 : 400,
-                      color: backtestTab === tab.key ? 'var(--text-primary)' : 'var(--text-muted)',
-                      background: 'transparent',
-                      border: 'none',
-                      borderBottom: backtestTab === tab.key ? '2px solid var(--blue)' : '2px solid transparent',
-                      cursor: 'pointer',
-                      marginBottom: '-1px',
-                    }}
-                  >{tab.label}</button>
-                ))}
-              </div>
-
-              {/* ── TAB: SIGNAL BACKTEST ── */}
-              {backtestTab === 'signals' && (() => {
-                const OUTCOME_COLOR = { WIN: 'var(--green)', LOSS: 'var(--red)', OPEN: 'var(--blue)', UNKNOWN: 'var(--text-muted)' };
-                return (
-                  <>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
-                      <label style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '0.62rem', color: 'var(--text-secondary)', cursor: 'pointer', userSelect: 'none' }}>
-                        <input type="checkbox" checked={backtestCurrentOnly} onChange={e => { const v = e.target.checked; setBacktestCurrentOnly(v); fetchBacktest(v); }} style={{ cursor: 'pointer' }} />
-                        Current pipeline only
-                      </label>
-                      <button onClick={() => fetchBacktest()} style={{ padding: '3px 10px', borderRadius: '5px', border: '1px solid var(--border)', fontSize: '0.62rem', cursor: 'pointer', background: 'transparent', color: 'var(--text-muted)' }}>
-                        {backtestLoading ? 'Loading…' : 'Refresh'}
-                      </button>
-                      {backtestData?.stats?.excluded > 0 && (
-                        <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)', fontFamily: 'JetBrains Mono, monospace' }}>
-                          {backtestData.stats.excluded} pre-guardrail brief{backtestData.stats.excluded === 1 ? '' : 's'} hidden
-                        </span>
-                      )}
-                    </div>
-                    {backtestLoading && !backtestData ? (
-                      <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', padding: '1rem 0' }}>Computing backtest…</div>
-                    ) : backtestData ? (() => {
-                      const s = backtestData.stats ?? {};
-                      const rows = backtestData.rows ?? [];
-                      const hitPct = s.hit_rate != null ? (s.hit_rate * 100).toFixed(0) : '—';
-                      const totalPnl = s.sim_total_pnl ?? 0;
-                      const openPnl  = s.sim_open_pnl ?? 0;
-                      return (
-                        <>
-                          <div style={{ display: 'flex', gap: '1.5rem', marginBottom: '1.25rem', flexWrap: 'wrap' }}>
-                            {[
-                              { label: 'Signals', value: s.total ?? 0, color: 'var(--text-primary)' },
-                              { label: 'Resolved', value: s.resolved ?? 0, color: 'var(--text-secondary)' },
-                              { label: 'Win Rate', value: s.resolved ? `${hitPct}%` : 'N/A', color: s.hit_rate >= 0.55 ? 'var(--green)' : s.hit_rate != null ? 'var(--red)' : 'var(--text-muted)' },
-                              { label: 'Open Paper P&L', value: `${openPnl >= 0 ? '+' : ''}$${openPnl.toFixed(2)}`, color: openPnl >= 0 ? 'var(--green)' : 'var(--red)' },
-                              { label: 'Total Sim P&L', value: `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}`, color: totalPnl >= 0 ? 'var(--green)' : 'var(--red)' },
-                              { label: 'Open Positions', value: s.open ?? 0, color: 'var(--blue)' },
-                            ].map(({ label, value, color }) => (
-                              <div key={label} style={{ minWidth: '90px' }}>
-                                <div style={{ fontSize: '0.58rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '2px' }}>{label}</div>
-                                <div style={{ fontSize: '1.05rem', fontWeight: 700, color, fontFamily: 'JetBrains Mono, monospace' }}>{value}</div>
-                              </div>
-                            ))}
-                          </div>
-                          {s.resolved === 0 && (
-                            <div style={{ fontSize: '0.7rem', color: 'var(--amber)', marginBottom: '0.75rem', padding: '0.5rem 0.75rem', border: '1px solid var(--amber)', borderRadius: '6px', background: 'var(--amber-dim)' }}>
-                              No resolved markets yet — system is {s.days} days old. Win rate will populate as markets settle.
-                            </div>
-                          )}
-                          <div style={{ overflowX: 'auto' }}>
-                            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.68rem', fontFamily: 'JetBrains Mono, monospace' }}>
-                              <thead>
-                                <tr style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-muted)', fontSize: '0.58rem', textTransform: 'uppercase' }}>
-                                  <th style={{ textAlign: 'left', padding: '6px 8px', fontWeight: 500 }}>Date</th>
-                                  <th style={{ textAlign: 'left', padding: '6px 8px', fontWeight: 500 }}>Market</th>
-                                  <th style={{ textAlign: 'center', padding: '6px 8px', fontWeight: 500 }}>Side</th>
-                                  <th style={{ textAlign: 'center', padding: '6px 8px', fontWeight: 500 }}>Entry</th>
-                                  <th style={{ textAlign: 'center', padding: '6px 8px', fontWeight: 500 }}>Conf</th>
-                                  <th style={{ textAlign: 'center', padding: '6px 8px', fontWeight: 500 }}>Outcome</th>
-                                  <th style={{ textAlign: 'center', padding: '6px 8px', fontWeight: 500 }}>Current</th>
-                                  <th style={{ textAlign: 'right', padding: '6px 8px', fontWeight: 500 }}>Paper P&L</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {rows.map((r, i) => {
-                                  const pnl = r.sim_pnl;
-                                  const pnlColor = pnl == null ? 'var(--text-muted)' : pnl >= 0 ? 'var(--green)' : 'var(--red)';
-                                  const entryC = Math.round((r.entry_price ?? 0) * 100);
-                                  const curC = r.current_price != null ? Math.round(r.current_price * 100) : null;
-                                  return (
-                                    <tr key={i} style={{ borderBottom: '1px solid var(--border)', opacity: r.outcome === 'UNKNOWN' ? 0.45 : 1 }}>
-                                      <td style={{ padding: '5px 8px', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{r.brief_date}</td>
-                                      <td style={{ padding: '5px 8px', maxWidth: '280px' }}>
-                                        <div style={{ fontWeight: 600, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={r.title || r.ticker}>{r.ticker}</div>
-                                        {r.title && r.title !== r.ticker && <div style={{ fontSize: '0.58rem', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.title}</div>}
-                                      </td>
-                                      <td style={{ padding: '5px 8px', textAlign: 'center' }}>
-                                        <span style={{ color: r.recommended_side === 'yes' ? 'var(--green)' : 'var(--red)', fontWeight: 700 }}>{r.recommended_side?.toUpperCase()}</span>
-                                      </td>
-                                      <td style={{ padding: '5px 8px', textAlign: 'center', color: 'var(--text-secondary)' }}>{entryC}¢</td>
-                                      <td style={{ padding: '5px 8px', textAlign: 'center', color: 'var(--text-muted)' }}>{Math.round((r.confidence ?? 0) * 100)}%</td>
-                                      <td style={{ padding: '5px 8px', textAlign: 'center' }}>
-                                        <span style={{ color: OUTCOME_COLOR[r.outcome] ?? 'var(--text-muted)', fontWeight: 700, fontSize: '0.62rem' }}>{r.outcome}</span>
-                                      </td>
-                                      <td style={{ padding: '5px 8px', textAlign: 'center', color: 'var(--text-secondary)' }}>{curC != null ? `${curC}¢` : '—'}</td>
-                                      <td style={{ padding: '5px 8px', textAlign: 'right', fontWeight: 700, color: pnlColor }}>
-                                        {pnl == null ? '—' : `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`}
-                                      </td>
-                                    </tr>
-                                  );
-                                })}
-                              </tbody>
-                            </table>
-                          </div>
-                          <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', marginTop: '0.75rem' }}>
-                            Paper P&L simulates Kelly-sized bets (quarter-Kelly, 5% cap) at a $1,000 bankroll. Not financial advice.
-                          </div>
-                        </>
-                      );
-                    })() : null}
-                  </>
-                );
-              })()}
-
-              {/* ── TAB: POSITION STRATEGY ── */}
-              {backtestTab === 'positions' && (() => {
+              {/* ── BACKTEST: STRATEGY SIMULATION ── */}
+              {(() => {
                 const OUTCOME_META = {
                   PROFIT_EXIT:   { label: 'PROFIT EXIT',   color: 'var(--green)' },
                   STOP_EXIT:     { label: 'STOP LOSS',     color: 'var(--red)' },
