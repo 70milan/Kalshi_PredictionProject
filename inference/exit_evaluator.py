@@ -37,8 +37,8 @@ EXIT_SIGNALS_PATH  = os.path.join(PROJECT_ROOT, "data", "gold", "exit_signals")
 # Tunable thresholds. Defaults picked from the May-2026 backtest sweep: at TP=40%
 # the strategy went from -$1.16 to +$10.72 across 13 closed trades, with R/R 2.36.
 # Override via env if you want to retune without redeploying.
-TAKE_PROFIT_ROI     = float(os.getenv("TAKE_PROFIT_ROI", "0.40"))   # sell when unrealized gain >= 40% of entry price
-STOP_LOSS_ROI       = float(os.getenv("STOP_LOSS_ROI",   "0.17"))   # cut when unrealized loss  >= 17% of entry price
+TAKE_PROFIT_ROI     = float(os.getenv("TAKE_PROFIT_ROI", "0.65"))   # sell when unrealized gain >= 65% of entry price
+STOP_LOSS_ROI       = float(os.getenv("STOP_LOSS_ROI",   "0.10"))   # cut when unrealized loss  >= 10% of entry price
 PROFIT_LOCK_CAPTURE = 0.80   # backstop: take profit at 80% of max possible gain
 STOP_LOSS_THRESHOLD = 0.20   # backstop: cut at 20c against entry
 TIME_DECAY_HOURS    = 24     # resolves within X hours

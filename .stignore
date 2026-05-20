@@ -7,3 +7,8 @@ __pycache__/
 *.pyc
 .DS_Store
 *.wal
+**/*.duckdb
+**/*.duckdb.wal
+(?d)**/*.sync-conflict-*
+(?d)**/.*.crc
+

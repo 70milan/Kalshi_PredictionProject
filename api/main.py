@@ -45,12 +45,15 @@ BRONZE_MARKETS_DIR    = os.path.join(PROJECT_ROOT, "data", "bronze", "kalshi_mar
 EXIT_SIGNALS_PATH     = os.path.join(PROJECT_ROOT, "data", "gold", "exit_signals")
 LEDGER_PATH           = os.path.join(PROJECT_ROOT, "data", "gold", "position_ledger.parquet")
 SETTLED_MARKETS_DIR   = os.path.join(PROJECT_ROOT, "data", "bronze", "kalshi_markets", "settled")
-KALSHI_BASE_URL       = "https://api.elections.kalshi.com/trade-api/v2"
+_KALSHI_LIVE_URL      = "https://api.elections.kalshi.com/trade-api/v2"
+_KALSHI_DEMO_URL      = "https://demo-api.kalshi.co/trade-api/v2"
+_USE_DEMO             = os.getenv("KALSHI_DEMO", "false").lower() == "true"
+KALSHI_BASE_URL       = _KALSHI_DEMO_URL if _USE_DEMO else _KALSHI_LIVE_URL
 KALSHI_API_KEY        = os.getenv("KALSHI_API_KEY")
 KALSHI_API_SECRET     = os.getenv("KALSHI_API_SECRET", "")
 SAFE_MODE             = os.getenv("SAFE_MODE", "true").lower() == "true"
 READONLY_MODE         = os.getenv("READONLY_MODE", "false").lower() == "true"
-DEFAULT_BANKROLL      = float(os.getenv("BANKROLL_USD", "1000.0"))
+DEFAULT_BANKROLL      = float(os.getenv("BANKROLL_USD", "500.0"))
 
 def _is_public_request(request) -> bool:
     """Tailscale Funnel proxies public internet traffic as 127.0.0.1.
@@ -717,6 +720,136 @@ def get_portfolio_positions():
 
 
 
+@app.get("/api/paper/positions")
+def get_paper_positions():
+    """
+    Live paper-trading positions computed on-the-fly from simulated_trades.csv
+    and the latest bronze snapshot. No ETL cycle needed — always current.
+    """
+    if not os.path.exists(SIMULATED_TRADES_PATH):
+        return {"positions": [], "summary": {"total_pnl": 0, "open": 0}}
+
+    try:
+        trades_df = pd.read_csv(SIMULATED_TRADES_PATH)
+    except Exception:
+        return {"positions": [], "summary": {"total_pnl": 0, "open": 0}}
+
+    if trades_df.empty:
+        return {"positions": [], "summary": {"total_pnl": 0, "open": 0}}
+
+    # Load current prices from the bronze latest snapshot (updated ~every 2 min by ingestor)
+    price_map = {}
+    if os.path.exists(BRONZE_LATEST_PATH):
+        try:
+            con = duckdb.connect()
+            latest = con.execute(f"""
+                SELECT ticker, yes_bid_dollars, yes_ask_dollars
+                FROM read_parquet('{BRONZE_LATEST_PATH.replace(chr(92), "/")}')
+            """).df()
+            con.close()
+            for _, row in latest.iterrows():
+                price_map[row["ticker"]] = {
+                    "yes_bid": float(row["yes_bid_dollars"]),
+                    "yes_ask": float(row["yes_ask_dollars"]),
+                }
+        except Exception:
+            pass
+
+    # Load settled outcomes for closed positions
+    settled_map = {}
+    if os.path.exists(SETTLED_MARKETS_DIR):
+        settled_files = sorted(
+            [f for f in os.listdir(SETTLED_MARKETS_DIR) if f.endswith(".parquet")],
+            key=lambda f: os.path.getmtime(os.path.join(SETTLED_MARKETS_DIR, f)),
+            reverse=True
+        )[:30]
+        if settled_files:
+            try:
+                con = duckdb.connect()
+                paths_sql = ", ".join(
+                    f"'{os.path.join(SETTLED_MARKETS_DIR, f).replace(chr(92), '/')}'"
+                    for f in settled_files
+                )
+                s = con.execute(f"""
+                    SELECT ticker, LOWER(result) AS result
+                    FROM read_parquet([{paths_sql}])
+                    QUALIFY ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY ingested_at DESC) = 1
+                """).df()
+                con.close()
+                settled_map = dict(zip(s["ticker"], s["result"]))
+            except Exception:
+                pass
+
+    title_map = _get_titles_from_history(trades_df["ticker"].unique().tolist())
+
+    positions = []
+    total_pnl = 0.0
+    for _, trade in trades_df.iterrows():
+        ticker     = str(trade["ticker"])
+        side       = str(trade["side"])
+        qty        = int(trade["count"])
+        entry_price = float(trade["price_dollars"])
+        cost_basis  = round(qty * entry_price, 2)
+        ts          = str(trade.get("timestamp", ""))[:10]
+
+        current_price = None
+        unrealized_pnl = None
+        status = "OPEN"
+
+        if ticker in settled_map:
+            result = settled_map[ticker]
+            won = (result == side)
+            exit_price = 1.0 if won else 0.0
+            pnl = round((exit_price - entry_price) * qty, 2)
+            status = "SETTLED_WIN" if won else "SETTLED_LOSS"
+            current_price = exit_price
+            unrealized_pnl = pnl
+        elif ticker in price_map:
+            p = price_map[ticker]
+            current_price = p["yes_bid"] if side == "yes" else (1.0 - p["yes_ask"])
+            unrealized_pnl = round((current_price - entry_price) * qty, 2)
+            # Check TP/SL against current price
+            roi = (current_price - entry_price) / entry_price if entry_price > 0 else 0
+            from inference.exit_evaluator import TAKE_PROFIT_ROI, STOP_LOSS_ROI
+            if roi >= TAKE_PROFIT_ROI:
+                status = "TP_READY"
+            elif roi <= -STOP_LOSS_ROI:
+                status = "SL_HIT"
+
+        total_pnl += unrealized_pnl or 0
+        roi_pct = round((current_price - entry_price) / entry_price * 100, 1) if current_price is not None else None
+
+        positions.append({
+            "ticker":        ticker,
+            "title":         title_map.get(ticker, ticker),
+            "side":          side,
+            "qty":           qty,
+            "entry_price":   round(entry_price, 4),
+            "current_price": round(current_price, 4) if current_price is not None else None,
+            "cost_basis":    cost_basis,
+            "unrealized_pnl": unrealized_pnl,
+            "roi_pct":       roi_pct,
+            "status":        status,
+            "entered_at":    ts,
+        })
+
+    positions.sort(key=lambda p: (0 if p["status"] in ("SL_HIT", "TP_READY") else 1, p.get("roi_pct") or 0))
+
+    return {
+        "positions": positions,
+        "summary": {
+            "total_pnl":   round(total_pnl, 2),
+            "open":        sum(1 for p in positions if p["status"] == "OPEN"),
+            "tp_ready":    sum(1 for p in positions if p["status"] == "TP_READY"),
+            "sl_hit":      sum(1 for p in positions if p["status"] == "SL_HIT"),
+            "settled_win": sum(1 for p in positions if p["status"] == "SETTLED_WIN"),
+            "settled_loss": sum(1 for p in positions if p["status"] == "SETTLED_LOSS"),
+            "bankroll":    DEFAULT_BANKROLL,
+            "as_of":       datetime.now(timezone.utc).isoformat(),
+        }
+    }
+
+
 @app.get("/api/portfolio/fills")
 def get_portfolio_fills(limit: int = 200):
     """Fetches fill history to compute cost basis for P&L."""
@@ -1162,12 +1295,13 @@ def get_position_backtest(
             if confidence < market_prob + 0.10:
                 continue
 
-        # Kelly-sized qty for sim P&L (mirrors signal backtest)
-        kelly_info = calculate_kelly(confidence, entry_price, sim_bankroll, resolved_count=len(settled_map))
-        if kelly_info["kelly_fraction"] > 0:
-            qty = int(kelly_info["suggested_bet_usd"] / entry_price) if entry_price > 0 else 0
-        else:
-            qty = int(10.0 / entry_price) if entry_price > 0 else 0
+        # Kelly viability gate — always applied (mirrors live inference filter).
+        # Trades where payout ratio is too poor for positive Kelly are excluded;
+        # they would be skipped by the pipeline and shouldn't pollute backtest P&L.
+        kelly_info = calculate_kelly(confidence, entry_price, sim_bankroll, resolved_count=50)
+        if not kelly_info["edge_detected"]:
+            continue
+        qty = int(kelly_info["suggested_bet_usd"] / entry_price) if entry_price > 0 else 0
 
         # Walk price history for this ticker. Default: walk ALL snapshots (no time gate);
         # exit at the threshold price the first time +TP% or -SL% is crossed.

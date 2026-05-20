@@ -30,6 +30,8 @@ export default function App() {
   const [toast, setToast] = useState(null);
   const [filter, setFilter] = useState('all');
   const [orders, setOrders] = useState([]);
+  const [paperPositions, setPaperPositions] = useState([]);
+  const [paperSummary, setPaperSummary] = useState(null);
   const [showPositions, setShowPositions] = useState(false);
   const [showExits, setShowExits] = useState(false);
   const [exitSignals, setExitSignals] = useState([]);
@@ -144,6 +146,16 @@ export default function App() {
     } catch (_) { }
   }, []);
 
+  const fetchPaperPositions = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/paper/positions`);
+      if (!res.ok) return;
+      const data = await res.json();
+      setPaperPositions(data.positions ?? []);
+      setPaperSummary(data.summary ?? null);
+    } catch (_) { }
+  }, []);
+
   const fetchPositionBacktest = useCallback(async (
     currentOnly = backtestCurrentOnly,
     tpPct = tpInput,
@@ -197,13 +209,15 @@ export default function App() {
     fetchIntelligence();
     fetchOrders();
     fetchExits();
+    fetchPaperPositions();
     const interval = setInterval(() => {
       fetchIntelligence();
       fetchOrders();
       fetchExits();
+      fetchPaperPositions();
     }, POLL_MS);
     return () => clearInterval(interval);
-  }, [fetchIntelligence, fetchOrders, fetchExits]);
+  }, [fetchIntelligence, fetchOrders, fetchExits, fetchPaperPositions]);
 
   // Derived stats
   const withEdge = briefs.filter(b => b.kelly?.edge_detected);
@@ -279,24 +293,15 @@ export default function App() {
             Backtest
           </button>
 
-          {/* EXITS BUTTON */}
-          <button
-            className="positions-header-btn"
-            onClick={() => setShowExits(v => !v)}
-          >
-            Exits
-            {exitSignals.length > 0 && (
-              <span className="positions-badge">{exitSignals.length}</span>
-            )}
-          </button>
-
           {/* POSITIONS BUTTON */}
           <button
             className="positions-header-btn"
             onClick={() => setShowPositions(v => !v)}
           >
             Positions
-            {orders.length > 0 && <span className="positions-badge">{orders.length}</span>}
+            {(safeMode ? paperPositions.length : orders.length) > 0 && (
+              <span className="positions-badge">{safeMode ? paperPositions.length : orders.length}</span>
+            )}
           </button>
 
           {lastPoll && (
@@ -336,12 +341,90 @@ export default function App() {
             <div className="modal-body">
             <div style={{ padding: '0.5rem 1.5rem 0.5rem' }}>
               <div className="section-heading" style={{ marginBottom: '0.75rem' }}>
-                Open Positions ({orders.length})
+                Open Positions ({safeMode ? paperPositions.length : orders.length})
               </div>
               {safeMode ? (
-                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', padding: '1rem 0' }}>
-                  Safe Mode — trades are simulated. Switch to live mode to see real Kalshi positions.
-                </div>
+                paperPositions.length === 0 ? (
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', padding: '1rem 0' }}>
+                    Paper trading active — no positions yet. Positions appear here as inference writes new briefs.
+                  </div>
+                ) : (() => {
+                  const totalInvested  = paperPositions.reduce((s, p) => s + (p.cost_basis ?? 0), 0);
+                  const totalValue     = paperPositions.reduce((s, p) => s + ((p.current_price ?? 0) * (p.qty ?? 0)), 0);
+                  const totalPnl       = paperSummary?.total_pnl ?? 0;
+                  const totalPnlPct    = totalInvested > 0 ? (totalPnl / totalInvested * 100) : 0;
+                  const bankroll       = paperSummary?.bankroll ?? 500;
+                  const exposurePct    = bankroll > 0 ? (totalInvested / bankroll * 100) : 0;
+                  const paperGrid      = '2.6fr 0.5fr 0.6fr 0.7fr 0.7fr 0.8fr 1fr 0.8fr';
+                  return (
+                  <div>
+                    {paperSummary && (
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.75rem', fontSize: '0.7rem', marginBottom: '0.9rem' }}>
+                        <div style={{ padding: '0.6rem 0.75rem', background: 'var(--bg-surface)', borderRadius: 'var(--radius)', border: '1px solid var(--border)' }}>
+                          <div style={{ color: 'var(--text-muted)', fontSize: '0.62rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Bankroll</div>
+                          <div style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--text-primary)' }}>${bankroll.toFixed(0)}</div>
+                          <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)' }}>{exposurePct.toFixed(1)}% deployed</div>
+                        </div>
+                        <div style={{ padding: '0.6rem 0.75rem', background: 'var(--bg-surface)', borderRadius: 'var(--radius)', border: '1px solid var(--border)' }}>
+                          <div style={{ color: 'var(--text-muted)', fontSize: '0.62rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Invested</div>
+                          <div style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--text-primary)' }}>${totalInvested.toFixed(2)}</div>
+                          <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)' }}>across {paperPositions.length} markets</div>
+                        </div>
+                        <div style={{ padding: '0.6rem 0.75rem', background: 'var(--bg-surface)', borderRadius: 'var(--radius)', border: '1px solid var(--border)' }}>
+                          <div style={{ color: 'var(--text-muted)', fontSize: '0.62rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Current Value</div>
+                          <div style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--text-primary)' }}>${totalValue.toFixed(2)}</div>
+                          <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)' }}>mark-to-market</div>
+                        </div>
+                        <div style={{ padding: '0.6rem 0.75rem', background: 'var(--bg-surface)', borderRadius: 'var(--radius)', border: '1px solid var(--border)' }}>
+                          <div style={{ color: 'var(--text-muted)', fontSize: '0.62rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Unrealized P&amp;L</div>
+                          <div style={{ fontSize: '1rem', fontWeight: 600, color: totalPnl >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                            {totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(2)}
+                          </div>
+                          <div style={{ fontSize: '0.62rem', color: totalPnl >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                            {totalPnlPct >= 0 ? '+' : ''}{totalPnlPct.toFixed(2)}%
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                    {(paperSummary?.tp_ready > 0 || paperSummary?.sl_hit > 0 || paperSummary?.settled_win > 0 || paperSummary?.settled_loss > 0) && (
+                      <div style={{ display: 'flex', gap: '1rem', fontSize: '0.68rem', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>
+                        {paperSummary.tp_ready > 0    && <span style={{ color: 'var(--green)' }}>TP Ready ✓ {paperSummary.tp_ready}</span>}
+                        {paperSummary.sl_hit > 0      && <span style={{ color: 'var(--red)' }}>SL Hit ✗ {paperSummary.sl_hit}</span>}
+                        {paperSummary.settled_win > 0  && <span style={{ color: 'var(--green)' }}>Settled Win {paperSummary.settled_win}</span>}
+                        {paperSummary.settled_loss > 0 && <span style={{ color: 'var(--red)' }}>Settled Loss {paperSummary.settled_loss}</span>}
+                      </div>
+                    )}
+                    <div className="orders-table" style={{ marginBottom: '1rem' }}>
+                      <div className="orders-header" style={{ gridTemplateColumns: paperGrid }}>
+                        <span>Market</span><span>Side</span><span>Qty</span>
+                        <span>Entry</span><span>Current</span><span>Invested</span><span>P&amp;L</span><span>Status</span>
+                      </div>
+                      {paperPositions.map((p) => {
+                        const pnlColor = (p.unrealized_pnl ?? 0) >= 0 ? 'var(--green)' : 'var(--red)';
+                        const statusColor = p.status === 'TP_READY' ? 'var(--green)' : p.status === 'SL_HIT' ? 'var(--red)' : p.status === 'SETTLED_WIN' ? 'var(--green)' : p.status === 'SETTLED_LOSS' ? 'var(--red)' : 'var(--text-muted)';
+                        return (
+                          <div key={p.ticker + p.entered_at} className="orders-row" style={{ gridTemplateColumns: paperGrid }}>
+                            <span style={{ overflow: 'hidden', paddingRight: '0.5rem' }} title={p.title}>
+                              <div style={{ fontSize: '0.72rem', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.ticker}</div>
+                              {p.title && p.title !== p.ticker && <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.title}</div>}
+                            </span>
+                            <span className={`order-side ${p.side}`}>{p.side?.toUpperCase()}</span>
+                            <span>{p.qty}</span>
+                            <span>{p.entry_price != null ? `${(p.entry_price * 100).toFixed(1)}¢` : '—'}</span>
+                            <span>{p.current_price != null ? `${(p.current_price * 100).toFixed(1)}¢` : '—'}</span>
+                            <span>{p.cost_basis != null ? `$${p.cost_basis.toFixed(2)}` : '—'}</span>
+                            <span style={{ color: pnlColor }}>
+                              {p.unrealized_pnl == null ? '—' : `${p.unrealized_pnl >= 0 ? '+' : ''}$${p.unrealized_pnl.toFixed(2)}`}
+                              {p.roi_pct != null && <div style={{ fontSize: '0.6rem', color: pnlColor, opacity: 0.8 }}>{p.roi_pct > 0 ? '+' : ''}{p.roi_pct}%</div>}
+                            </span>
+                            <span style={{ fontSize: '0.65rem', color: statusColor }}>{p.status}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  );
+                })()
               ) : orders.length === 0 ? (
                 <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', padding: '1rem 0' }}>
                   No open positions on Kalshi.

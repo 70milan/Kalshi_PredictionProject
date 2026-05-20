@@ -25,14 +25,19 @@ import time
 load_dotenv()
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
+sys.path.insert(0, os.path.join(PROJECT_ROOT, "api"))
 from orchestration.notify import notify_failure, notify_brief
+from kelly_math import calculate_kelly
+from exit_evaluator import TAKE_PROFIT_ROI, STOP_LOSS_ROI
 
 GOLD_MISPRICING        = os.path.join(PROJECT_ROOT, "data", "gold", "mispricing_scores")
 GOLD_BRIEFS            = os.path.join(PROJECT_ROOT, "data", "gold", "intelligence_briefs")
 CHROMA_PATH            = os.path.join(PROJECT_ROOT, "data", "chroma")
 INFERENCE_HISTORY_PATH = os.path.join(PROJECT_ROOT, "data", "gold", "inference_history.parquet")
 
-SIMILARITY_FLOOR = 0.50
+SIMILARITY_FLOOR      = 0.50
+SIMULATED_TRADES_PATH = os.path.join(PROJECT_ROOT, "data", "gold", "simulated_trades.csv")
+PAPER_BANKROLL        = float(os.getenv("BANKROLL_USD", "500.0"))
 
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 OPENAI_MODEL  = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
@@ -405,8 +410,17 @@ def main():
         # threshold where edge survives LLM miscalibration.
         MIN_EDGE = 0.10
         market_prob = current_odds if recommended == "yes" else (1.0 - current_odds)
+        entry_price = market_prob
         if confidence < market_prob + MIN_EDGE:
             print(f"    > Edge too thin: LLM {confidence:.0%} vs market {market_prob:.0%} (need +{MIN_EDGE:.0%}) — skipping")
+            continue
+
+        # Kelly viability gate: skip if the payout ratio is too poor for positive Kelly.
+        # This filters "trapped" bets where TP at {TAKE_PROFIT_ROI:.0%} ROI is physically
+        # unreachable (entry_price * (1+TP) > $1.00) or reward/risk is unfavorable.
+        kelly_check = calculate_kelly(confidence, entry_price, PAPER_BANKROLL, resolved_count=50)
+        if not kelly_check["edge_detected"]:
+            print(f"    > Kelly negative: entry_price {entry_price:.2f} on {recommended} side — payout ratio too poor, skipping")
             continue
 
         # odds_delta = implied move: LLM-implied YES probability minus market YES probability.
@@ -434,6 +448,19 @@ def main():
         ts_str   = current_time.strftime("%Y%m%d_%H%M%S")
         out_path = os.path.join(GOLD_BRIEFS, f"brief_{ts_str}_{ticker}.parquet")
         pd.DataFrame([row]).to_parquet(out_path, index=False)
+
+        # Auto paper-trade: log to simulated_trades.csv immediately — no manual approval needed.
+        kelly_sized = calculate_kelly(confidence, entry_price, PAPER_BANKROLL, resolved_count=50)
+        qty = int(kelly_sized["suggested_bet_usd"] / entry_price) if entry_price > 0 else 0
+        if qty > 0:
+            file_exists = os.path.isfile(SIMULATED_TRADES_PATH)
+            with open(SIMULATED_TRADES_PATH, "a", encoding="utf-8") as f:
+                if not file_exists:
+                    f.write("timestamp,ticker,side,count,price_dollars,total_risk_usd\n")
+                risk = round(qty * entry_price, 2)
+                f.write(f"{current_time.isoformat()},{ticker},{recommended},{qty},{entry_price:.4f},{risk:.2f}\n")
+            print(f"    [PAPER TRADE] {qty}x {ticker} {recommended.upper()} @ {entry_price:.4f}  risk=${qty*entry_price:.2f}")
+
         display_odds = current_odds if recommended == "yes" else (1.0 - current_odds)
         notify_brief(
             ticker=ticker,
