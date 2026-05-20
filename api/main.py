@@ -700,6 +700,8 @@ def get_portfolio_orders(status: str = "resting", limit: int = 20):
 @app.get("/api/portfolio/positions")
 def get_portfolio_positions():
     """Fetches open positions (filled contracts you currently hold) from Kalshi."""
+    if SAFE_MODE:
+        return {"market_positions": [], "positions": []}
     headers = _sign_kalshi_request("GET", "/trade-api/v2/portfolio/positions")
     try:
         r = requests.get(f"{KALSHI_BASE_URL}/portfolio/positions", headers=headers, timeout=10)
@@ -734,7 +736,7 @@ def get_paper_positions():
     except Exception:
         return {"positions": [], "summary": {"total_pnl": 0, "open": 0}}
 
-    if trades_df.empty:
+    if trades_df.empty or "ticker" not in trades_df.columns:
         return {"positions": [], "summary": {"total_pnl": 0, "open": 0}}
 
     # Load current prices from the bronze latest snapshot (updated ~every 2 min by ingestor)
@@ -853,6 +855,8 @@ def get_paper_positions():
 @app.get("/api/portfolio/fills")
 def get_portfolio_fills(limit: int = 200):
     """Fetches fill history to compute cost basis for P&L."""
+    if SAFE_MODE:
+        return {"fills": []}
     headers = _sign_kalshi_request("GET", "/trade-api/v2/portfolio/fills")
     try:
         r = requests.get(f"{KALSHI_BASE_URL}/portfolio/fills",
