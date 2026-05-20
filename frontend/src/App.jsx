@@ -44,6 +44,13 @@ export default function App() {
   // Empty string = use server defaults from inference.exit_evaluator (.env / code).
   const [tpInput, setTpInput] = useState('');
   const [slInput, setSlInput] = useState('');
+  // Realistic mode layers walk-forward + Kalshi fees + stale-brief drop on top.
+  const [backtestRealistic, setBacktestRealistic] = useState(false);
+  const [backtestTab, setBacktestTab] = useState(0); // 0 = strategy sim, 1 = oracle
+  const [oracleBacktestData, setOracleBacktestData] = useState(null);
+  const [oracleBacktestLoading, setOracleBacktestLoading] = useState(false);
+  const [oracleTpInput, setOracleTpInput] = useState('');
+  const [oracleSlInput, setOracleSlInput] = useState('');
   const [showFreshBriefs, setShowFreshBriefs] = useState(true);
   const [showMidBriefs, setShowMidBriefs] = useState(false);
   const [showAgedBriefs, setShowAgedBriefs] = useState(false);
@@ -57,7 +64,10 @@ export default function App() {
 
   const fetchIntelligence = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/intelligence`);
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 10000);
+      const res = await fetch(`${API_BASE}/api/intelligence`, { signal: ctrl.signal });
+      clearTimeout(timer);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setBriefs(data.briefs ?? []);
@@ -132,7 +142,12 @@ export default function App() {
     } catch (_) { }
   }, []);
 
-  const fetchPositionBacktest = useCallback(async (currentOnly = backtestCurrentOnly, tpPct = tpInput, slPct = slInput) => {
+  const fetchPositionBacktest = useCallback(async (
+    currentOnly = backtestCurrentOnly,
+    tpPct = tpInput,
+    slPct = slInput,
+    realistic = backtestRealistic,
+  ) => {
     setPositionBacktestLoading(true);
     try {
       // Convert percent input ("40") to ROI fraction (0.40) for the API.
@@ -141,13 +156,30 @@ export default function App() {
       const slNum = parseFloat(slPct);
       if (!Number.isNaN(tpNum) && tpNum > 0) params.set('take_profit', String(tpNum / 100));
       if (!Number.isNaN(slNum) && slNum > 0) params.set('stop_loss',   String(slNum / 100));
+      if (realistic) params.set('realistic', 'true');
       const res = await fetch(`${API_BASE}/api/backtest/positions?${params.toString()}`);
       if (!res.ok) return;
       const data = await res.json();
       setPositionBacktestData(data);
     } catch (_) { }
     finally { setPositionBacktestLoading(false); }
-  }, [backtestCurrentOnly, tpInput, slInput]);
+  }, [backtestCurrentOnly, tpInput, slInput, backtestRealistic]);
+
+  const fetchOracleBacktest = useCallback(async (tpPct = oracleTpInput, slPct = oracleSlInput) => {
+    setOracleBacktestLoading(true);
+    try {
+      const params = new URLSearchParams({ sim_bankroll: '1000' });
+      const tpNum = parseFloat(tpPct);
+      const slNum = parseFloat(slPct);
+      if (!Number.isNaN(tpNum) && tpNum > 0) params.set('take_profit', String(tpNum / 100));
+      if (!Number.isNaN(slNum) && slNum > 0) params.set('stop_loss',   String(slNum / 100));
+      const res = await fetch(`${API_BASE}/api/backtest/oracle?${params.toString()}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      setOracleBacktestData(data);
+    } catch (_) { }
+    finally { setOracleBacktestLoading(false); }
+  }, [oracleTpInput, oracleSlInput]);
 
   useEffect(() => {
     fetch(`${API_BASE}/api/config`)
@@ -390,8 +422,35 @@ export default function App() {
             <div className="modal-body">
             <div style={{ padding: '0.5rem 1.5rem 0.5rem' }}>
 
-              {/* ── BACKTEST: STRATEGY SIMULATION ── */}
-              {(() => {
+              {/* TAB BAR */}
+              <div style={{ display: 'flex', gap: '0', marginBottom: '1.25rem', borderBottom: '1px solid var(--border)' }}>
+                {[
+                  { label: 'Strategy Simulation', subtitle: 'LLM briefs · last 30d' },
+                  { label: 'Oracle Backtest', subtitle: '250+ settled markets' },
+                ].map((tab, idx) => (
+                  <button
+                    key={idx}
+                    onClick={() => {
+                      setBacktestTab(idx);
+                      if (idx === 0 && !positionBacktestData) fetchPositionBacktest();
+                      if (idx === 1 && !oracleBacktestData) fetchOracleBacktest();
+                    }}
+                    style={{
+                      padding: '0.45rem 1rem', fontSize: '0.68rem', fontWeight: 600,
+                      border: 'none', borderBottom: backtestTab === idx ? '2px solid var(--blue)' : '2px solid transparent',
+                      background: 'transparent', cursor: 'pointer',
+                      color: backtestTab === idx ? 'var(--text-primary)' : 'var(--text-muted)',
+                      transition: 'color 0.15s',
+                    }}
+                  >
+                    {tab.label}
+                    <span style={{ display: 'block', fontSize: '0.55rem', fontWeight: 400, color: 'var(--text-muted)', marginTop: '1px' }}>{tab.subtitle}</span>
+                  </button>
+                ))}
+              </div>
+
+              {/* ── TAB 0: STRATEGY SIMULATION (LLM briefs) ── */}
+              {backtestTab === 0 && (() => {
                 const OUTCOME_META = {
                   PROFIT_EXIT:   { label: 'PROFIT EXIT',   color: 'var(--green)' },
                   STOP_EXIT:     { label: 'STOP LOSS',     color: 'var(--red)' },
@@ -405,6 +464,18 @@ export default function App() {
                       <label style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '0.62rem', color: 'var(--text-secondary)', cursor: 'pointer', userSelect: 'none' }}>
                         <input type="checkbox" checked={backtestCurrentOnly} onChange={e => { const v = e.target.checked; setBacktestCurrentOnly(v); fetchPositionBacktest(v); }} style={{ cursor: 'pointer' }} />
                         Current pipeline only
+                      </label>
+                      <label
+                        title="Walk-forward only (no peeking pre-brief), subtract Kalshi fees, drop briefs whose stated entry price disagrees with the actual market at brief time by >10c"
+                        style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '0.62rem', color: backtestRealistic ? 'var(--amber)' : 'var(--text-secondary)', cursor: 'pointer', userSelect: 'none' }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={backtestRealistic}
+                          onChange={e => { const v = e.target.checked; setBacktestRealistic(v); fetchPositionBacktest(backtestCurrentOnly, tpInput, slInput, v); }}
+                          style={{ cursor: 'pointer' }}
+                        />
+                        Realistic mode (walk-forward + fees + drop stale briefs)
                       </label>
                       <button onClick={() => fetchPositionBacktest()} style={{ padding: '3px 10px', borderRadius: '5px', border: '1px solid var(--border)', fontSize: '0.62rem', cursor: 'pointer', background: 'transparent', color: 'var(--text-muted)' }}>
                         {positionBacktestLoading ? 'Loading…' : 'Refresh'}
@@ -559,6 +630,151 @@ export default function App() {
                         </>
                       );
                     })() : null}
+                  </>
+                );
+              })()}
+
+              {/* ── TAB 1: ORACLE BACKTEST (settled markets) ── */}
+              {backtestTab === 1 && (() => {
+                const OUTCOME_META = {
+                  PROFIT_EXIT:  { label: 'PROFIT EXIT',  color: 'var(--green)' },
+                  STOP_EXIT:    { label: 'STOP LOSS',    color: 'var(--red)' },
+                  SETTLED_WIN:  { label: 'SETTLED WIN',  color: 'var(--green)' },
+                };
+                const s = oracleBacktestData?.stats ?? {};
+                const trades = oracleBacktestData?.trades ?? [];
+                const tpDef = s.take_profit_pct;
+                const slDef = s.stop_loss_pct;
+                const inputStyle = {
+                  width: '52px', padding: '2px 4px', fontSize: '0.62rem',
+                  background: 'var(--bg-card)', color: 'var(--text-primary)',
+                  border: '1px solid var(--border)', borderRadius: '4px',
+                  fontFamily: 'JetBrains Mono, monospace', textAlign: 'center',
+                };
+                const labelStyle = { fontSize: '0.58rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' };
+                const isOverride = oracleTpInput !== '' || oracleSlInput !== '';
+                const applyOracle = () => fetchOracleBacktest(oracleTpInput, oracleSlInput);
+                const resetOracle = () => { setOracleTpInput(''); setOracleSlInput(''); fetchOracleBacktest('', ''); };
+                return (
+                  <>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
+                      <div style={{ fontSize: '0.65rem', color: 'var(--amber)', fontWeight: 600 }}>
+                        Oracle mode — direction always correct (upper bound)
+                      </div>
+                      <button onClick={applyOracle} style={{ padding: '3px 10px', borderRadius: '5px', border: '1px solid var(--border)', fontSize: '0.62rem', cursor: 'pointer', background: 'transparent', color: 'var(--text-muted)', marginLeft: 'auto' }}>
+                        {oracleBacktestLoading ? 'Loading…' : 'Refresh'}
+                      </button>
+                      {(oracleBacktestData || oracleBacktestLoading) && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                          <span style={labelStyle}>TP %</span>
+                          <input type="number" step="1" min="1" max="500"
+                            placeholder={tpDef ? `${tpDef}` : '40'}
+                            value={oracleTpInput}
+                            onChange={e => setOracleTpInput(e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter') applyOracle(); }}
+                            style={inputStyle}
+                          />
+                          <span style={labelStyle}>SL %</span>
+                          <input type="number" step="1" min="1" max="100"
+                            placeholder={slDef ? `${slDef}` : '17'}
+                            value={oracleSlInput}
+                            onChange={e => setOracleSlInput(e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter') applyOracle(); }}
+                            style={inputStyle}
+                          />
+                          <button onClick={applyOracle} disabled={oracleBacktestLoading || !isOverride}
+                            style={{ padding: '3px 10px', borderRadius: '5px', border: '1px solid var(--border-strong)', fontSize: '0.62rem', cursor: isOverride ? 'pointer' : 'not-allowed', background: isOverride ? 'var(--bg-surface)' : 'transparent', color: isOverride ? 'var(--text-primary)' : 'var(--text-muted)', opacity: isOverride ? 1 : 0.5 }}
+                          >Apply</button>
+                          {isOverride && (
+                            <button onClick={resetOracle} disabled={oracleBacktestLoading}
+                              style={{ padding: '3px 8px', borderRadius: '5px', border: '1px solid var(--border)', fontSize: '0.6rem', cursor: 'pointer', background: 'transparent', color: 'var(--text-muted)' }}
+                            >Reset</button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    {oracleBacktestLoading && !oracleBacktestData ? (
+                      <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', padding: '1rem 0' }}>Scanning 250+ settled markets…</div>
+                    ) : oracleBacktestData ? (
+                      <>
+                        <div style={{ display: 'flex', gap: '1.5rem', marginBottom: '1.25rem', flexWrap: 'wrap' }}>
+                          {[
+                            { label: 'Trades',     value: s.total ?? 0,                             color: 'var(--text-primary)' },
+                            { label: 'Wins',       value: s.wins ?? 0,                              color: 'var(--green)' },
+                            { label: 'Stop Exits', value: s.stop_exits ?? 0,                        color: 'var(--red)' },
+                            { label: 'Win Rate',   value: s.win_rate != null ? `${(s.win_rate*100).toFixed(0)}%` : 'N/A', color: (s.win_rate ?? 0) >= 0.55 ? 'var(--green)' : 'var(--red)' },
+                            { label: 'Avg Win',    value: s.avg_win != null ? `${s.avg_win >= 0 ? '+' : ''}$${s.avg_win?.toFixed(2)}` : 'N/A', color: 'var(--green)' },
+                            { label: 'Avg Loss',   value: s.avg_loss != null ? `$${s.avg_loss?.toFixed(2)}` : 'N/A', color: 'var(--red)' },
+                            { label: 'R/R',        value: s.rr != null ? `${s.rr}×` : 'N/A',       color: 'var(--text-secondary)' },
+                            { label: 'Total P&L',  value: s.total_pnl != null ? `${s.total_pnl >= 0 ? '+' : ''}$${s.total_pnl?.toFixed(2)}` : 'N/A', color: (s.total_pnl ?? 0) >= 0 ? 'var(--green)' : 'var(--red)' },
+                          ].map(({ label, value, color }) => (
+                            <div key={label} style={{ minWidth: '70px' }}>
+                              <div style={{ fontSize: '0.55rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '2px' }}>{label}</div>
+                              <div style={{ fontSize: '0.95rem', fontWeight: 700, color, fontFamily: 'JetBrains Mono, monospace' }}>{value}</div>
+                            </div>
+                          ))}
+                        </div>
+                        <div style={{ overflowX: 'auto' }}>
+                          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.68rem', fontFamily: 'JetBrains Mono, monospace' }}>
+                            <thead>
+                              <tr style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-muted)', fontSize: '0.58rem', textTransform: 'uppercase' }}>
+                                <th style={{ textAlign: 'left',   padding: '6px 8px', fontWeight: 500 }}>Entry</th>
+                                <th style={{ textAlign: 'left',   padding: '6px 8px', fontWeight: 500 }}>Market</th>
+                                <th style={{ textAlign: 'center', padding: '6px 8px', fontWeight: 500 }}>Side</th>
+                                <th style={{ textAlign: 'center', padding: '6px 8px', fontWeight: 500 }}>Buy</th>
+                                <th style={{ textAlign: 'center', padding: '6px 8px', fontWeight: 500 }}>Outcome</th>
+                                <th style={{ textAlign: 'center', padding: '6px 8px', fontWeight: 500 }}>Exit</th>
+                                <th style={{ textAlign: 'center', padding: '6px 8px', fontWeight: 500 }}>Peak ROI</th>
+                                <th style={{ textAlign: 'right',  padding: '6px 8px', fontWeight: 500 }}>P&L</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {trades.map((t, i) => {
+                                const meta = OUTCOME_META[t.outcome] ?? { label: t.outcome, color: 'var(--text-muted)' };
+                                const pnlColor = t.pnl >= 0 ? 'var(--green)' : 'var(--red)';
+                                const entryC = Math.round((t.entry_price ?? 0) * 100);
+                                const exitC  = t.exit_price != null ? Math.round(t.exit_price * 100) : null;
+                                return (
+                                  <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
+                                    <td style={{ padding: '5px 8px', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{t.entry_date ?? '—'}</td>
+                                    <td style={{ padding: '5px 8px', maxWidth: '260px' }}>
+                                      <div style={{ fontWeight: 600, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={t.title || t.ticker}>{t.ticker}</div>
+                                      {t.title && t.title !== t.ticker && <div style={{ fontSize: '0.58rem', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.title}</div>}
+                                    </td>
+                                    <td style={{ padding: '5px 8px', textAlign: 'center' }}>
+                                      <span style={{ color: t.side === 'yes' ? 'var(--green)' : 'var(--red)', fontWeight: 700 }}>{t.side?.toUpperCase()}</span>
+                                    </td>
+                                    <td style={{ padding: '5px 8px', textAlign: 'center', color: 'var(--text-secondary)' }}>{entryC}¢</td>
+                                    <td style={{ padding: '5px 8px', textAlign: 'center' }}>
+                                      <span style={{ color: meta.color, fontWeight: 700, fontSize: '0.62rem' }}>{meta.label}</span>
+                                    </td>
+                                    <td style={{ padding: '5px 8px', textAlign: 'center', color: 'var(--text-secondary)' }}>
+                                      {exitC != null ? `${exitC}¢` : '—'}
+                                      {t.exit_date && <div style={{ fontSize: '0.55rem', color: 'var(--text-muted)' }}>{t.exit_date}</div>}
+                                    </td>
+                                    <td style={{ padding: '5px 8px', textAlign: 'center', color: t.peak_roi_pct >= 20 ? 'var(--green)' : 'var(--text-muted)' }}>
+                                      {t.peak_roi_pct != null ? `+${t.peak_roi_pct}%` : '—'}
+                                    </td>
+                                    <td style={{ padding: '5px 8px', textAlign: 'right', fontWeight: 700, color: pnlColor }}>
+                                      {`${t.pnl >= 0 ? '+' : ''}$${t.pnl.toFixed(2)}`}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                        <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', marginTop: '0.75rem' }}>
+                          Oracle upper bound — assumes perfect direction prediction on every settled market in our bronze snapshots.
+                          Real model performance will be lower. Tests whether TP/SL rules add value vs. holding to settlement.
+                        </div>
+                      </>
+                    ) : (
+                      <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', padding: '1rem 0' }}>
+                        Click Refresh to load oracle simulation.
+                      </div>
+                    )}
                   </>
                 );
               })()}
@@ -914,9 +1130,9 @@ export default function App() {
               };
               return (
                 <>
-                  {renderSection('3hrs-',  freshBriefs, showFreshBriefs, setShowFreshBriefs, 'var(--green)', 0)}
+                  {renderSection('<3hrs',  freshBriefs, showFreshBriefs, setShowFreshBriefs, 'var(--green)', 0)}
                   {renderSection('3-6hrs', midBriefs,   showMidBriefs,   setShowMidBriefs,   'var(--amber)', '1rem')}
-                  {renderSection('6hrs+',  agedBriefs,  showAgedBriefs,  setShowAgedBriefs,  'var(--red)',   '1rem')}
+                  {renderSection('>6hrs',  agedBriefs,  showAgedBriefs,  setShowAgedBriefs,  'var(--red)',   '1rem')}
                 </>
               );
             })()}

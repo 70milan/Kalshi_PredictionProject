@@ -1015,6 +1015,11 @@ def get_backtest(days: int = 30, sim_bankroll: float = 1000.0, current_system_on
 # POSITION STRATEGY BACKTEST
 # ─────────────────────────────────────────────
 
+def _kalshi_fee_per_contract(price: float) -> float:
+    """Kalshi trading fee formula: 0.07 * P * (1 - P) per contract."""
+    return round(0.07 * price * (1.0 - price), 4)
+
+
 @app.get("/api/backtest/positions")
 def get_position_backtest(
     days: int = 30,
@@ -1022,6 +1027,7 @@ def get_position_backtest(
     current_system_only: bool = False,
     take_profit: float | None = None,
     stop_loss: float | None = None,
+    realistic: bool = False,
 ):
     """
     Strategy simulation: applies TAKE_PROFIT_ROI / STOP_LOSS_ROI triggers
@@ -1031,6 +1037,12 @@ def get_position_backtest(
     Defaults to the values in inference.exit_evaluator (env-driven). Pass
     ?take_profit=0.30&stop_loss=0.17 to experiment without touching .env.
     Values are ROI fractions: 0.20 = 20%, 0.40 = 40%, etc.
+
+    ?realistic=true layers three honesty corrections on top:
+      - walk-forward only (no peeking at price action before the brief existed)
+      - subtract Kalshi fees on entry + exit (0.07 * P * (1-P) per contract)
+      - drop "stale briefs" whose stated entry price disagrees with the
+        actual market snapshot at brief time by more than 10c
     """
     from inference.exit_evaluator import TAKE_PROFIT_ROI as TP_DEFAULT, STOP_LOSS_ROI as SL_DEFAULT
     TAKE_PROFIT_ROI = float(take_profit) if take_profit is not None else TP_DEFAULT
@@ -1148,11 +1160,30 @@ def get_position_backtest(
         else:
             qty = int(10.0 / entry_price) if entry_price > 0 else 0
 
-        # Walk ALL price history for this ticker (chronological, not gated on brief
-        # timestamp). If +20% or -17% was ever crossed vs the briefed entry, close
-        # the trade at the THRESHOLD price — not the sparse snapshot value, which
-        # can be a crashed-gap point that wildly overstates the move.
+        # Walk price history for this ticker. Default: walk ALL snapshots (no time gate);
+        # exit at the threshold price the first time +TP% or -SL% is crossed.
+        # When realistic=true: only walk post-brief snapshots, AND drop briefs whose
+        # stated entry price disagrees with the actual market at brief time by >10c.
+        entry_ts = None
+        try:
+            entry_ts = pd.to_datetime(b["ingested_at"], utc=True)
+        except Exception:
+            pass
+
         ticker_hist = history_df[history_df["ticker"] == ticker].copy().sort_values("ts")
+
+        if realistic and entry_ts is not None and not ticker_hist.empty:
+            # Stale-brief drop: nearest snapshot (in either direction) within 1h of brief
+            diffs = (ticker_hist["ts"] - entry_ts).abs()
+            nearest_idx = diffs.idxmin()
+            nearest_row = ticker_hist.loc[nearest_idx]
+            if abs((nearest_row["ts"] - entry_ts).total_seconds()) / 3600.0 < 1.0:
+                actual_yes = float(nearest_row["yes_bid_dollars"])
+                if abs(actual_yes - entry_yes) > 0.10:
+                    continue  # stale brief — entry price was fiction at brief time
+
+            # Walk-forward filter: only post-brief snapshots count
+            ticker_hist = ticker_hist[ticker_hist["ts"] >= entry_ts]
 
         exit_action = None
         exit_price  = None
@@ -1202,6 +1233,13 @@ def get_position_backtest(
                 pnl        = None
                 exit_price = None
 
+        # Realistic mode: subtract Kalshi fees on entry + exit (only if we have a closed trade).
+        # Fee formula: 0.07 * P * (1-P) per contract, charged on both sides.
+        if realistic and pnl is not None and exit_price is not None and qty > 0:
+            fee_in  = _kalshi_fee_per_contract(entry_price) * qty
+            fee_out = _kalshi_fee_per_contract(exit_price)  * qty
+            pnl = round(pnl - fee_in - fee_out, 2)
+
         trades.append({
             "ticker":       ticker,
             "title":        title,
@@ -1249,6 +1287,208 @@ def get_position_backtest(
             "total_pnl":       total_pnl,
             "take_profit_pct": round(TAKE_PROFIT_ROI * 100),
             "stop_loss_pct":   round(STOP_LOSS_ROI * 100),
+            "realistic":       bool(realistic),
+        },
+    }
+
+
+# ─────────────────────────────────────────────
+# ORACLE STRATEGY BACKTEST
+# ─────────────────────────────────────────────
+
+@app.get("/api/backtest/oracle")
+def get_oracle_backtest(
+    take_profit: float | None = None,
+    stop_loss:   float | None = None,
+    sim_bankroll: float = 1000.0,
+):
+    """
+    Upper-bound strategy backtest using settled markets as ground truth.
+
+    For every settled market (binary yes/no outcome) that appeared in the
+    bronze price snapshots inside the 25-75¢ entry zone, simulates:
+      - Entry at the FIRST snapshot it was in range
+      - Side = settlement outcome (perfect oracle — always correct direction)
+      - TP/SL exit rules applied walking forward from entry
+
+    Purpose: isolates whether the EXIT RULES add value vs. holding to settlement,
+    using 200+ settled trades instead of the ~23 from LLM briefs.
+    This is an upper bound — real results will be lower because our model is
+    not a perfect oracle.
+    """
+    from inference.exit_evaluator import TAKE_PROFIT_ROI as TP_DEFAULT, STOP_LOSS_ROI as SL_DEFAULT
+    TAKE_PROFIT_ROI = float(take_profit) if take_profit is not None else TP_DEFAULT
+    STOP_LOSS_ROI   = float(stop_loss)   if stop_loss   is not None else SL_DEFAULT
+
+    if not os.path.exists(SETTLED_MARKETS_DIR):
+        return {"trades": [], "stats": {}}
+
+    settled_files = [f for f in os.listdir(SETTLED_MARKETS_DIR) if f.endswith(".parquet")]
+    if not settled_files:
+        return {"trades": [], "stats": {}}
+
+    con = duckdb.connect()
+    try:
+        settled_paths_sql = ", ".join(
+            f"'{os.path.join(SETTLED_MARKETS_DIR, f).replace(chr(92), '/')}'"
+            for f in settled_files
+        )
+        settled_df = con.execute(f"""
+            SELECT ticker, title, LOWER(result) AS result
+            FROM read_parquet([{settled_paths_sql}], union_by_name=true)
+            WHERE LOWER(result) IN ('yes', 'no')
+            QUALIFY ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY ingested_at DESC) = 1
+        """).df()
+
+        if settled_df.empty:
+            return {"trades": [], "stats": {}}
+
+        tickers_sql  = ", ".join(f"'{t}'" for t in settled_df["ticker"].tolist())
+        bronze_glob  = os.path.join(
+            PROJECT_ROOT, "data", "bronze", "kalshi_markets", "open", "markets_*.parquet"
+        ).replace("\\", "/")
+
+        # First snapshot per ticker where price was in 25-75¢ zone
+        entry_df = con.execute(f"""
+            WITH ranked AS (
+                SELECT ticker,
+                       CAST(yes_bid_dollars AS DOUBLE) AS yes_bid,
+                       CAST(yes_ask_dollars AS DOUBLE) AS yes_ask,
+                       CAST(ingested_at AS TIMESTAMP WITH TIME ZONE) AS ts,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY ticker
+                           ORDER BY CAST(ingested_at AS TIMESTAMP WITH TIME ZONE)
+                       ) AS rn
+                FROM read_parquet('{bronze_glob}', union_by_name=true)
+                WHERE ticker IN ({tickers_sql})
+                  AND CAST(yes_bid_dollars AS DOUBLE) BETWEEN 0.25 AND 0.75
+            )
+            SELECT ticker, yes_bid, yes_ask, ts AS entry_ts
+            FROM ranked WHERE rn = 1
+        """).df()
+
+        if entry_df.empty:
+            return {"trades": [], "stats": {}}
+
+        entry_tickers_sql = ", ".join(f"'{t}'" for t in entry_df["ticker"].tolist())
+        history_df = con.execute(f"""
+            SELECT ticker,
+                   CAST(yes_bid_dollars AS DOUBLE) AS yes_bid,
+                   CAST(yes_ask_dollars AS DOUBLE) AS yes_ask,
+                   CAST(ingested_at AS TIMESTAMP WITH TIME ZONE) AS ts
+            FROM read_parquet('{bronze_glob}', union_by_name=true)
+            WHERE ticker IN ({entry_tickers_sql})
+            ORDER BY ticker, ts
+        """).df()
+
+    except Exception as e:
+        print(f"[ORACLE BACKTEST ERROR] {e}")
+        return {"trades": [], "stats": {}, "error": str(e)}
+    finally:
+        con.close()
+
+    settled_map = dict(zip(settled_df["ticker"], settled_df["result"]))
+    title_map   = dict(zip(settled_df["ticker"], settled_df.get("title", settled_df["ticker"])))
+    entry_map   = {r["ticker"]: r for _, r in entry_df.iterrows()}
+
+    trades = []
+    for ticker, entry_row in entry_map.items():
+        settled_result = settled_map.get(ticker)
+        if not settled_result:
+            continue
+
+        side        = settled_result          # oracle: always bet correct direction
+        entry_yes   = float(entry_row["yes_bid"])
+        entry_price = entry_yes if side == "yes" else (1.0 - float(entry_row["yes_ask"]))
+        entry_ts    = entry_row["entry_ts"]
+
+        if entry_price <= 0.05 or entry_price >= 0.95:
+            continue
+
+        qty = max(1, int((sim_bankroll * 0.05) / entry_price))
+
+        ticker_hist = history_df[history_df["ticker"] == ticker].sort_values("ts")
+        ticker_hist = ticker_hist[ticker_hist["ts"] >= entry_ts]
+
+        exit_action = None
+        exit_price  = None
+        exit_ts     = None
+        peak_roi    = 0.0
+
+        for _, snap in ticker_hist.iterrows():
+            yes_bid = float(snap["yes_bid"])
+            yes_ask = float(snap["yes_ask"])
+            current_value = yes_bid if side == "yes" else (1.0 - yes_ask)
+            roi = (current_value - entry_price) / entry_price if entry_price > 0 else 0.0
+            if roi > peak_roi:
+                peak_roi = roi
+            if roi >= TAKE_PROFIT_ROI:
+                exit_action = "PROFIT_EXIT"
+                exit_price  = round(entry_price * (1 + TAKE_PROFIT_ROI), 4)
+                exit_ts     = snap["ts"]
+                break
+            elif roi <= -STOP_LOSS_ROI:
+                exit_action = "STOP_EXIT"
+                exit_price  = round(entry_price * (1 - STOP_LOSS_ROI), 4)
+                exit_ts     = snap["ts"]
+                break
+
+        if exit_action:
+            outcome = exit_action
+            pnl     = round((exit_price - entry_price) * qty, 2)
+        else:
+            won     = True  # oracle always wins at settlement
+            outcome = "SETTLED_WIN"
+            pnl     = round((1.0 - entry_price) * qty, 2)
+            exit_price = 1.0
+
+        trades.append({
+            "ticker":       ticker,
+            "title":        title_map.get(ticker, ticker),
+            "side":         side,
+            "entry_price":  round(entry_price, 4),
+            "entry_yes":    round(entry_yes, 4),
+            "qty":          qty,
+            "entry_date":   str(entry_ts)[:10],
+            "outcome":      outcome,
+            "exit_price":   round(exit_price, 4) if exit_price is not None else None,
+            "exit_date":    str(exit_ts)[:10] if exit_ts is not None else None,
+            "pnl":          pnl,
+            "peak_roi_pct": round(peak_roi * 100, 1),
+        })
+
+    trades.sort(key=lambda t: t.get("entry_date", ""), reverse=True)
+
+    profit_exits = [t for t in trades if t["outcome"] == "PROFIT_EXIT"]
+    stop_exits   = [t for t in trades if t["outcome"] == "STOP_EXIT"]
+    settled_wins = [t for t in trades if t["outcome"] == "SETTLED_WIN"]
+
+    wins   = profit_exits + settled_wins
+    losses = stop_exits
+    closed = wins + losses
+    win_rate  = round(len(wins)  / len(closed), 4) if closed else None
+    total_pnl = round(sum(t["pnl"] for t in trades), 2)
+    avg_win   = round(sum(t["pnl"] for t in wins) / len(wins), 2)   if wins   else 0.0
+    avg_loss  = round(sum(t["pnl"] for t in losses) / len(losses), 2) if losses else 0.0
+    rr        = round(abs(avg_win / avg_loss), 2) if avg_loss and avg_win else None
+
+    return {
+        "trades": trades,
+        "stats": {
+            "total":           len(trades),
+            "profit_exits":    len(profit_exits),
+            "stop_exits":      len(stop_exits),
+            "settled_wins":    len(settled_wins),
+            "wins":            len(wins),
+            "losses":          len(losses),
+            "win_rate":        win_rate,
+            "total_pnl":       total_pnl,
+            "avg_win":         avg_win,
+            "avg_loss":        avg_loss,
+            "rr":              rr,
+            "take_profit_pct": round(TAKE_PROFIT_ROI * 100),
+            "stop_loss_pct":   round(STOP_LOSS_ROI   * 100),
+            "note":            "Oracle upper bound — direction always correct. Actual model results will be lower.",
         },
     }
 

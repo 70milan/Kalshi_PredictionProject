@@ -61,14 +61,14 @@ If Portainer MCP shows as failed, check that the command points to the system Py
 
 ### Serving
 
+Frontend and API run directly (not via Docker):
+- **API**: `uvicorn api.main:app --host 0.0.0.0 --port 8000`
+- **Frontend**: `npm run dev -- --host` (in `frontend/`)
+- Same commands on dev and prod machines
+
 | Container | Script | Port | Notes |
 |---|---|---|---|
-| `predictiq_api_live` | `api/main.py` | `100.67.60.86:8000` | Full API — trade execution enabled, Tailscale only |
-| `predictiq_api_readonly` | `api/main.py` | `127.0.0.1:8001` | Read-only — proxied via Tailscale Funnel to public internet |
-| `predictiq_frontend` | Vite dev server | `100.67.60.86:5173` | React dashboard, Tailscale only |
 | `portainer` | Portainer CE | `9000/9443` | Container management UI |
-
-> Exit code 137 on API/frontend = OOM kill. The prod box has limited RAM — Spark ETL can crowd out the API if they overlap.
 
 ---
 
