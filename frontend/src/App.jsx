@@ -46,6 +46,8 @@ export default function App() {
   const [slInput, setSlInput] = useState('');
   // Realistic mode layers walk-forward + Kalshi fees + stale-brief drop on top.
   const [backtestRealistic, setBacktestRealistic] = useState(false);
+  const [backtestDays, setBacktestDays] = useState(90);
+  const [backtestModel, setBacktestModel] = useState('all');
   const [backtestTab, setBacktestTab] = useState(0); // 0 = strategy sim, 1 = oracle
   const [oracleBacktestData, setOracleBacktestData] = useState(null);
   const [oracleBacktestLoading, setOracleBacktestLoading] = useState(false);
@@ -147,23 +149,26 @@ export default function App() {
     tpPct = tpInput,
     slPct = slInput,
     realistic = backtestRealistic,
+    days = backtestDays,
+    mdl = backtestModel,
   ) => {
     setPositionBacktestLoading(true);
     try {
       // Convert percent input ("40") to ROI fraction (0.40) for the API.
-      const params = new URLSearchParams({ days: '30', current_system_only: String(currentOnly) });
+      const params = new URLSearchParams({ days: String(days), current_system_only: String(currentOnly) });
       const tpNum = parseFloat(tpPct);
       const slNum = parseFloat(slPct);
       if (!Number.isNaN(tpNum) && tpNum > 0) params.set('take_profit', String(tpNum / 100));
       if (!Number.isNaN(slNum) && slNum > 0) params.set('stop_loss',   String(slNum / 100));
       if (realistic) params.set('realistic', 'true');
+      if (mdl && mdl !== 'all') params.set('model', mdl);
       const res = await fetch(`${API_BASE}/api/backtest/positions?${params.toString()}`);
       if (!res.ok) return;
       const data = await res.json();
       setPositionBacktestData(data);
     } catch (_) { }
     finally { setPositionBacktestLoading(false); }
-  }, [backtestCurrentOnly, tpInput, slInput, backtestRealistic]);
+  }, [backtestCurrentOnly, tpInput, slInput, backtestRealistic, backtestDays, backtestModel]);
 
   const fetchOracleBacktest = useCallback(async (tpPct = oracleTpInput, slPct = oracleSlInput) => {
     setOracleBacktestLoading(true);
@@ -461,6 +466,41 @@ export default function App() {
                 return (
                   <>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                        <span style={{ fontSize: '0.58rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Days</span>
+                        {[30, 60, 90].map(d => (
+                          <button
+                            key={d}
+                            onClick={() => { setBacktestDays(d); fetchPositionBacktest(backtestCurrentOnly, tpInput, slInput, backtestRealistic, d); }}
+                            style={{
+                              padding: '2px 7px', borderRadius: '4px', fontSize: '0.60rem', cursor: 'pointer',
+                              border: '1px solid var(--border)',
+                              background: backtestDays === d ? 'var(--accent)' : 'transparent',
+                              color:      backtestDays === d ? '#fff'           : 'var(--text-muted)',
+                            }}
+                          >{d}</button>
+                        ))}
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                        <span style={{ fontSize: '0.58rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Model</span>
+                        {[
+                          { val: 'all',          label: 'All' },
+                          { val: 'production',   label: 'Prod' },
+                          { val: 'gpt-4o-mini',  label: '4o-mini' },
+                          { val: 'gpt-4o',       label: '4o' },
+                        ].map(({ val, label }) => (
+                          <button
+                            key={val}
+                            onClick={() => { setBacktestModel(val); fetchPositionBacktest(backtestCurrentOnly, tpInput, slInput, backtestRealistic, backtestDays, val); }}
+                            style={{
+                              padding: '2px 7px', borderRadius: '4px', fontSize: '0.60rem', cursor: 'pointer',
+                              border: '1px solid var(--border)',
+                              background: backtestModel === val ? 'var(--accent)' : 'transparent',
+                              color:      backtestModel === val ? '#fff'           : 'var(--text-muted)',
+                            }}
+                          >{label}</button>
+                        ))}
+                      </div>
                       <label style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '0.62rem', color: 'var(--text-secondary)', cursor: 'pointer', userSelect: 'none' }}>
                         <input type="checkbox" checked={backtestCurrentOnly} onChange={e => { const v = e.target.checked; setBacktestCurrentOnly(v); fetchPositionBacktest(v); }} style={{ cursor: 'pointer' }} />
                         Current pipeline only
@@ -490,8 +530,8 @@ export default function App() {
                           fontFamily: 'JetBrains Mono, monospace', textAlign: 'center',
                         };
                         const labelStyle = { fontSize: '0.58rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' };
-                        const apply = () => fetchPositionBacktest(backtestCurrentOnly, tpInput, slInput);
-                        const reset = () => { setTpInput(''); setSlInput(''); fetchPositionBacktest(backtestCurrentOnly, '', ''); };
+                        const apply = () => fetchPositionBacktest(backtestCurrentOnly, tpInput, slInput, backtestRealistic, backtestDays);
+                        const reset = () => { setTpInput(''); setSlInput(''); fetchPositionBacktest(backtestCurrentOnly, '', '', backtestRealistic, backtestDays); };
                         const isOverride = tpInput !== '' || slInput !== '';
                         return (
                           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>

@@ -1028,6 +1028,7 @@ def get_position_backtest(
     take_profit: float | None = None,
     stop_loss: float | None = None,
     realistic: bool = False,
+    model: str = "all",
 ):
     """
     Strategy simulation: applies TAKE_PROFIT_ROI / STOP_LOSS_ROI triggers
@@ -1056,6 +1057,13 @@ def get_position_backtest(
         parquet_glob  = os.path.join(BRIEFS_PATH, "*.parquet").replace("\\", "/")
         bronze_glob   = os.path.join(PROJECT_ROOT, "data", "bronze", "kalshi_markets", "open", "*.parquet").replace("\\", "/")
 
+        # Model filter clause
+        model_filter = ""
+        if model == "production":
+            model_filter = "AND (replay_model IS NULL OR replay_model = '')"
+        elif model in ("gpt-4o-mini", "gpt-4o"):
+            model_filter = f"AND replay_model = '{model}'"
+
         # One brief per ticker (highest confidence), same window as signal backtest
         briefs_df = con.execute(f"""
             SELECT ticker, title, recommended_side, current_odds, confidence_score, ingested_at
@@ -1070,6 +1078,7 @@ def get_position_backtest(
                   AND verdict NOT LIKE '%Error%'
                   AND verdict IS NOT NULL AND verdict != ''
                   AND recommended_side IN ('yes', 'no')
+                  {model_filter}
             )
             WHERE rn = 1
         """).df()
