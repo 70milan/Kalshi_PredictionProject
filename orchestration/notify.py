@@ -10,16 +10,20 @@ def _send(message: str) -> None:
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
     if not token or not chat_id:
+        print(f"[notify] SKIPPED — TELEGRAM_BOT_TOKEN={'set' if token else 'MISSING'} "
+              f"TELEGRAM_CHAT_ID={'set' if chat_id else 'MISSING'} in container env")
         return
     try:
         import requests
-        requests.post(
+        r = requests.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
             json={"chat_id": chat_id, "text": message},
             timeout=10,
         )
-    except Exception:
-        pass
+        if not r.ok:
+            print(f"[notify] HTTP {r.status_code}: {r.text[:300]}")
+    except Exception as e:
+        print(f"[notify] send failed: {e}")
 
 
 def notify_failure(script_name: str, reason: str, phase: str = "") -> None:

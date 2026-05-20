@@ -11,7 +11,6 @@ if platform.system() == "Linux":
 
 import duckdb
 import chromadb
-from groq import Groq
 from openai import OpenAI
 from sentence_transformers import SentenceTransformer
 import json
@@ -26,20 +25,35 @@ import time
 load_dotenv()
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
-from orchestration.notify import notify_brief
+from orchestration.notify import notify_failure, notify_brief
 
-GOLD_MISPRICING = os.path.join(PROJECT_ROOT, "data", "gold", "mispricing_scores")
-GOLD_BRIEFS     = os.path.join(PROJECT_ROOT, "data", "gold", "intelligence_briefs")
-CHROMA_PATH     = os.path.join(PROJECT_ROOT, "data", "chroma")
+GOLD_MISPRICING        = os.path.join(PROJECT_ROOT, "data", "gold", "mispricing_scores")
+GOLD_BRIEFS            = os.path.join(PROJECT_ROOT, "data", "gold", "intelligence_briefs")
+CHROMA_PATH            = os.path.join(PROJECT_ROOT, "data", "chroma")
+INFERENCE_HISTORY_PATH = os.path.join(PROJECT_ROOT, "data", "gold", "inference_history.parquet")
 
 SIMILARITY_FLOOR = 0.50
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-groq_client  = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
-GROQ_MODEL   = "llama-3.3-70b-versatile"
-
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+OPENAI_MODEL  = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+# Per-cycle scan limits.
+CANDIDATE_LIMIT      = int(os.getenv("CANDIDATE_LIMIT", "20"))
+
+# Cooldown: skip a ticker if it was analyzed within COOLDOWN_HOURS AND its
+# mispricing_score has moved less than COOLDOWN_SCORE_DELTA points since.
+# This is what kills the "same 3 briefs re-analyzed every cycle" loop.
+COOLDOWN_HOURS       = float(os.getenv("INFERENCE_COOLDOWN_HOURS", "2"))
+COOLDOWN_SCORE_DELTA = float(os.getenv("INFERENCE_COOLDOWN_SCORE_DELTA", "5"))
+
+# gpt-4o-mini list price (USD per 1M tokens). Override via env if it changes.
+OPENAI_INPUT_PRICE_PER_MTOK  = float(os.getenv("OPENAI_INPUT_PRICE_PER_MTOK", "0.15"))
+OPENAI_OUTPUT_PRICE_PER_MTOK = float(os.getenv("OPENAI_OUTPUT_PRICE_PER_MTOK", "0.60"))
+# Hard daily ceiling on synthesis spend. Cycle stops calling the API beyond this.
+BUDGET_GUARD_USD             = float(os.getenv("BUDGET_GUARD_USD", "1.0"))
+
 _minilm_model = None
+
 
 def _get_query_embedding(collection_name: str, text: str):
     """Returns query embedding matching the collection's stored dimensions."""
@@ -52,11 +66,15 @@ def _get_query_embedding(collection_name: str, text: str):
             _minilm_model = SentenceTransformer("all-MiniLM-L6-v2")
         return _minilm_model.encode([text]).tolist()
 
+
 # ---------------------------------------------------------
 # 2. CANDIDATE SELECTION
 # ---------------------------------------------------------
 def get_predictive_candidates(con, min_score=80.0):
-    print(f"[Predictive] Scanning Gold Mispricing Ledger for scores >= {min_score}...")
+    print(f"[Predictive] Scanning Gold Mispricing Ledger for scores >= {min_score} (limit={CANDIDATE_LIMIT})...")
+    # Tiebreaker on abs(delta_15m) matters: 17+ markets typically tie at score 100,
+    # so ordering by score alone picks ~randomly. Markets that moved most recently
+    # are the most interesting among saturated scores.
     query = f"""
     SELECT ticker, title, yes_bid as current_odds, delta_15m, mispricing_score,
            max_spike_multiplier, sentiment_signal, ingested_at
@@ -65,20 +83,88 @@ def get_predictive_candidates(con, min_score=80.0):
       AND mispricing_score >= {min_score}
       AND TRY_CAST(ingested_at AS TIMESTAMPTZ) >= CURRENT_TIMESTAMP - INTERVAL '48 hours'
       AND yes_bid BETWEEN 0.25 AND 0.75
-    ORDER BY mispricing_score DESC
-    LIMIT 3;
+    QUALIFY ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY ingested_at DESC) = 1
+    ORDER BY mispricing_score DESC, ABS(COALESCE(delta_15m, 0)) DESC
+    LIMIT {CANDIDATE_LIMIT};
     """
     try:
         df = con.execute(query).df()
         if not df.empty:
-            df['previous_odds'] = df['current_odds'] / (1 + df['delta_15m'])
+            df['previous_odds'] = df['current_odds'] / (1 + df['delta_15m'].fillna(0))
         return df
     except Exception as e:
         print(f"[Predictive] ERROR checking Gold ledger: {e}")
         return pd.DataFrame()
 
+
 # ---------------------------------------------------------
-# 3. LLM OUTPUT CLEANUP
+# 3. COOLDOWN + BUDGET HELPERS
+# ---------------------------------------------------------
+HISTORY_COLS = ["ticker", "analyzed_at", "score", "input_tokens", "output_tokens", "cost_usd"]
+
+
+def _load_inference_history():
+    if not os.path.exists(INFERENCE_HISTORY_PATH):
+        return pd.DataFrame(columns=HISTORY_COLS)
+    try:
+        return pd.read_parquet(INFERENCE_HISTORY_PATH)
+    except Exception:
+        return pd.DataFrame(columns=HISTORY_COLS)
+
+
+def _should_skip_ticker(ticker, current_score, history_df):
+    if history_df.empty:
+        return False
+    matches = history_df[history_df["ticker"] == ticker]
+    if matches.empty:
+        return False
+    latest    = matches.sort_values("analyzed_at", ascending=False).iloc[0]
+    last_time = pd.to_datetime(latest["analyzed_at"], utc=True, errors="coerce")
+    if pd.isna(last_time):
+        return False
+    age_hours = (datetime.now(timezone.utc) - last_time).total_seconds() / 3600.0
+    if age_hours >= COOLDOWN_HOURS:
+        return False
+    last_score = float(latest["score"]) if pd.notna(latest["score"]) else 0.0
+    return abs(float(current_score) - last_score) < COOLDOWN_SCORE_DELTA
+
+
+def _today_spend(history_df):
+    if history_df.empty:
+        return 0.0
+    today = datetime.now(timezone.utc).date().isoformat()
+    try:
+        today_rows = history_df[history_df["analyzed_at"].astype(str).str.startswith(today)]
+        return float(today_rows["cost_usd"].fillna(0).sum())
+    except Exception:
+        return 0.0
+
+
+def _append_inference(history_df, ticker, score, input_tokens, output_tokens):
+    """Append a row to in-memory history + persist. Returns (new_df, call_cost_usd)."""
+    cost = (
+        (input_tokens  / 1_000_000) * OPENAI_INPUT_PRICE_PER_MTOK +
+        (output_tokens / 1_000_000) * OPENAI_OUTPUT_PRICE_PER_MTOK
+    )
+    row = {
+        "ticker":        ticker,
+        "analyzed_at":   datetime.now(timezone.utc).isoformat(),
+        "score":         float(score),
+        "input_tokens":  int(input_tokens),
+        "output_tokens": int(output_tokens),
+        "cost_usd":      round(cost, 6),
+    }
+    new_df = pd.concat([history_df, pd.DataFrame([row])], ignore_index=True)
+    try:
+        os.makedirs(os.path.dirname(INFERENCE_HISTORY_PATH), exist_ok=True)
+        new_df.to_parquet(INFERENCE_HISTORY_PATH, index=False)
+    except Exception as e:
+        print(f"    [WARN] could not persist inference_history.parquet: {e}")
+    return new_df, cost
+
+
+# ---------------------------------------------------------
+# 4. LLM OUTPUT CLEANUP
 # ---------------------------------------------------------
 def _flatten_llm_field(value):
     if isinstance(value, str):
@@ -103,8 +189,9 @@ def _flatten_llm_field(value):
         return ' '.join([_flatten_llm_field(item) for item in value])
     return str(value)
 
+
 # ---------------------------------------------------------
-# 4. RAG SEARCH
+# 5. RAG SEARCH
 # ---------------------------------------------------------
 def fetch_rag_context(collections, query_text, current_time, window_mins=4320):
     start_ts    = int((current_time - timedelta(minutes=window_mins)).timestamp())
@@ -133,21 +220,50 @@ def fetch_rag_context(collections, query_text, current_time, window_mins=4320):
                 score    = 1.0 / (1.0 + distance)
                 if score >= SIMILARITY_FLOOR:
                     scored_docs.append({
+                        "source":  results['metadatas'][0][i].get("source", coll.name),
                         "content": results['documents'][0][i],
-                        "source":  results['metadatas'][0][i].get('source', coll.name),
-                        "score":   score
+                        "score":   score,
                     })
 
     return sorted(scored_docs, key=lambda x: x['score'], reverse=True)
 
-# ---------------------------------------------------------
-# 5. LLM SYNTHESIS
-# ---------------------------------------------------------
-def generate_predictive_brief(market, context_docs):
-    """Returns a dict with bull_case/bear_case/verdict, or None on 429."""
-    if not groq_client:
-        return {"bull_case": "N/A", "bear_case": "N/A", "verdict": "GROQ_API_KEY missing."}
 
+# ---------------------------------------------------------
+# 6. LLM SYNTHESIS
+# ---------------------------------------------------------
+def _call_openai(prompt: str):
+    """Single OpenAI chat completion. Returns (dict, in_tok, out_tok). On 429: retry once after 10s."""
+    for attempt in (1, 2):
+        try:
+            response = openai_client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+                temperature=0.3,
+            )
+            text = response.choices[0].message.content
+            try:
+                res_data = json.loads(text)
+            except Exception:
+                res_data = {
+                    "verdict": "Parse error", "bull_case": text, "bear_case": "",
+                    "recommended_side": "no", "confidence_pct": 0,
+                }
+            usage = getattr(response, "usage", None)
+            in_tok  = int(getattr(usage, "prompt_tokens", 0)     or 0)
+            out_tok = int(getattr(usage, "completion_tokens", 0) or 0)
+            return res_data, in_tok, out_tok
+        except Exception as e:
+            if attempt == 1 and "429" in str(e):
+                print(f"    [Rate Limit] OpenAI 429 — backing off 10s and retrying...")
+                time.sleep(10)
+                continue
+            print(f"    [LLM ERROR] {e}")
+            return None, 0, 0
+
+
+def generate_predictive_brief(market, context_docs):
+    """Returns (brief_dict_or_None, input_tokens, output_tokens)."""
     rag_text   = "\n\n".join([f"Source: {d['source']}\n{d['content'][:800]}" for d in context_docs])
     sent       = market['sentiment_signal']
     sent_label = "Strongly Positive" if sent > 0.5 else ("Strongly Negative" if sent < -0.5 else "Neutral/Mixed")
@@ -177,43 +293,38 @@ RULES:
 - verdict MUST start with one of: "Buy YES", "Buy NO", or "No Trade". Never write "Neutral", "N/A", or any other value.
 - decision_reason: 1-2 sentences explaining exactly why the recommended side was chosen over the other. Reference the single most important piece of evidence that tipped the scale. Be specific, not generic."""
 
-    try:
-        response = groq_client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
-            temperature=0.3
-        )
-        res_data = json.loads(response.choices[0].message.content)
-        if isinstance(res_data, list) and len(res_data) > 0:
-            res_data = res_data[0]
+    res_data, in_tok, out_tok = _call_openai(prompt)
+    if res_data is None:
+        return None, 0, 0
 
-        if isinstance(res_data, dict):
-            for k in list(res_data.keys()):
-                if k not in ("recommended_side", "confidence_pct"):
-                    res_data[k] = _flatten_llm_field(res_data[k])
-            
-            # Ensure valid side
-            side = str(res_data.get("recommended_side", "")).strip().lower()
-            if side not in ("yes", "no"):
-                verdict_lower = str(res_data.get("verdict", "")).lower()
-                side = "yes" if "buy yes" in verdict_lower else "no" if "buy no" in verdict_lower else "yes"
-            res_data["recommended_side"] = side
-            
-        return res_data
-    except Exception as e:
-        if "429" in str(e):
-            print(f"    [Rate Limit] Groq 429 — skipping this market, next cycle will retry.")
-            return None
-        return {"bull_case": "Error", "bear_case": "Error", "verdict": str(e)}
+    if isinstance(res_data, list) and len(res_data) > 0:
+        res_data = res_data[0]
+    if isinstance(res_data, dict):
+        for k in list(res_data.keys()):
+            if k not in ("recommended_side", "confidence_pct"):
+                res_data[k] = _flatten_llm_field(res_data[k])
+        side = str(res_data.get("recommended_side", "")).strip().lower()
+        if side not in ("yes", "no"):
+            verdict_lower = str(res_data.get("verdict", "")).lower()
+            side = "yes" if "buy yes" in verdict_lower else "no" if "buy no" in verdict_lower else "yes"
+        res_data["recommended_side"] = side
+
+    return res_data, in_tok, out_tok
+
 
 # ---------------------------------------------------------
-# 6. MAIN
+# 7. MAIN
 # ---------------------------------------------------------
 def main():
     print("=" * 60)
     print(" PredictIQ Predictive Scanner: Delayed Reaction Detection")
+    print(f" Model: {OPENAI_MODEL}  |  Candidate limit: {CANDIDATE_LIMIT}")
+    print(f" Cooldown: {COOLDOWN_HOURS}h or score delta >= {COOLDOWN_SCORE_DELTA}  |  Budget: ${BUDGET_GUARD_USD}/day")
     print("=" * 60)
+
+    if not os.getenv("OPENAI_API_KEY"):
+        print("[Predictive] OPENAI_API_KEY missing — cannot synthesize briefs. Aborting.")
+        return
 
     con = duckdb.connect()
     con.execute("INSTALL delta; LOAD delta;")
@@ -233,20 +344,34 @@ def main():
         print(f"[Predictive] ERROR: Chroma collections not ready: {e}")
         return
 
+    history_df  = _load_inference_history()
+    today_spent = _today_spend(history_df)
+    print(f"[Predictive] Today's spend so far: ${today_spent:.4f} (cap: ${BUDGET_GUARD_USD})")
+
     os.makedirs(GOLD_BRIEFS, exist_ok=True)
     current_time = datetime.now(timezone.utc)
     written      = 0
+    skipped_cd   = 0
+    skipped_bg   = 0
 
     for _, market in candidates.iterrows():
+        ticker = market['ticker']
+        score  = float(market['mispricing_score'])
+
+        if _should_skip_ticker(ticker, score, history_df):
+            skipped_cd += 1
+            continue
+
+        if today_spent >= BUDGET_GUARD_USD:
+            skipped_bg += 1
+            continue
+
         market_time = pd.to_datetime(market['ingested_at'])
         if market_time.tzinfo is None:
             market_time = market_time.replace(tzinfo=timezone.utc)
 
-        print(f"\n[Predictive] ANALYZING: {market['ticker']} (Score: {market['mispricing_score']:.1f})")
+        print(f"\n[Predictive] ANALYZING: {ticker} (Score: {score:.1f})")
 
-        # Enrich the query with odds context and side framing so the embedding
-        # search finds documents relevant to the specific directional question,
-        # not just the topic in general.
         odds_pct = round(float(market['current_odds']) * 100, 1)
         enriched_query = (
             f"Prediction market question: {market['title']} "
@@ -259,19 +384,21 @@ def main():
             continue
 
         print(f"    > Synthesizing {len(context_docs)} signals...")
-        brief = generate_predictive_brief(market, context_docs)
+        brief, in_tok, out_tok = generate_predictive_brief(market, context_docs)
 
         if brief is None:
-            continue  # 429 — skip, next cycle retries
+            continue  # transient error / rate limit — next cycle retries
 
-        rag_score = max([d['score'] for d in context_docs])
-        llm_pct = float(brief.get("confidence_pct", 50)) / 100.0
-        # Use LLM probability directly — rag_score is evidence quality, not a probability.
-        # Blending compressed confidence toward 0.5 and inflated Kelly edges.
-        confidence = round(llm_pct, 4)
-        current_odds = float(market['current_odds'])
+        # Record the call regardless of edge gate — we paid for it.
+        history_df, call_cost = _append_inference(history_df, ticker, score, in_tok, out_tok)
+        today_spent += call_cost
+
+        rag_score      = max([d['score'] for d in context_docs])
+        llm_pct        = float(brief.get("confidence_pct", 50)) / 100.0
+        confidence     = round(llm_pct, 4)
+        current_odds   = float(market['current_odds'])
         llm_confidence = float(brief.get("confidence_pct", 50)) / 100.0
-        recommended = brief.get("recommended_side", "yes")
+        recommended    = brief.get("recommended_side", "yes")
 
         # Calibration guard: LLM must beat the market by at least MIN_EDGE percentage points,
         # not just any positive margin. A 51% LLM vs a 50% market is noise; +10pp is the
@@ -283,11 +410,10 @@ def main():
             continue
 
         # odds_delta = implied move: LLM-implied YES probability minus market YES probability.
-        # For "buy yes": implied YES = llm_confidence. For "buy no": implied YES = 1 - llm_confidence.
         implied_yes = llm_confidence if recommended == "yes" else (1.0 - llm_confidence)
-        odds_delta = round(implied_yes - current_odds, 4)
+        odds_delta  = round(implied_yes - current_odds, 4)
         row = {
-            "ticker":           market['ticker'],
+            "ticker":           ticker,
             "title":            market['title'],
             "bull_case":        _flatten_llm_field(brief.get("bull_case", "")),
             "bear_case":        _flatten_llm_field(brief.get("bear_case", "")),
@@ -303,15 +429,14 @@ def main():
             "ingested_at":      current_time.isoformat(),
         }
 
-        print(f"--- VERDICT [{market['ticker']}]: {row['verdict']}")
+        print(f"--- VERDICT [{ticker}]: {row['verdict']}")
 
-        # Append as a timestamped Parquet file — no Spark, no JVM
         ts_str   = current_time.strftime("%Y%m%d_%H%M%S")
-        out_path = os.path.join(GOLD_BRIEFS, f"brief_{ts_str}_{market['ticker']}.parquet")
+        out_path = os.path.join(GOLD_BRIEFS, f"brief_{ts_str}_{ticker}.parquet")
         pd.DataFrame([row]).to_parquet(out_path, index=False)
         display_odds = current_odds if recommended == "yes" else (1.0 - current_odds)
         notify_brief(
-            ticker=market['ticker'],
+            ticker=ticker,
             title=market['title'],
             side=recommended.upper(),
             odds=display_odds,
@@ -320,9 +445,12 @@ def main():
         )
         written += 1
 
-        time.sleep(30)  # respect Groq TPM limits between calls
+    print(
+        f"\n[Predictive] Done. {written} brief(s) written | "
+        f"{skipped_cd} skipped (cooldown) | {skipped_bg} skipped (budget) | "
+        f"spend today: ${today_spent:.4f}"
+    )
 
-    print(f"\n[Predictive] Done. {written} brief(s) written to {GOLD_BRIEFS}")
 
 if __name__ == "__main__":
     main()

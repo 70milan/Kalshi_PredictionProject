@@ -4,9 +4,13 @@ PredictIQ - Exit Evaluator
 Reads position_ledger.parquet, joins live Kalshi prices, and emits
 SELL/HOLD recommendations for each open position based on 6 triggers.
 
+TAKE_PROFIT_ROI / STOP_LOSS_ROI are env-configurable (TAKE_PROFIT_ROI,
+STOP_LOSS_ROI in .env). The api/backtest endpoint imports them, so both
+the live exit evaluator AND the Backtest tab use the same source of truth.
+
 Triggers (evaluated in priority order):
-  1. ROI TAKE PROFIT — unrealized gain >= 15% of capital deployed
-  2. ROI STOP LOSS   — unrealized loss >= 9% of capital deployed
+  1. ROI TAKE PROFIT — unrealized gain >= TAKE_PROFIT_ROI (default 40%)
+  2. ROI STOP LOSS   — unrealized loss >= STOP_LOSS_ROI (default 17%)
   3. PROFIT LOCK     — captured >=80% of max possible gain (backstop)
   4. STOP LOSS       — market moved >=20c against entry (backstop)
   5. THESIS FLIP     — today's brief recommends the opposite side
@@ -30,9 +34,11 @@ LATEST_PARQUET     = os.path.join(PROJECT_ROOT, "data", "bronze", "kalshi_market
 BRIEFS_PATH        = os.path.join(PROJECT_ROOT, "data", "gold", "intelligence_briefs")
 EXIT_SIGNALS_PATH  = os.path.join(PROJECT_ROOT, "data", "gold", "exit_signals")
 
-# Tunable thresholds (Phase 1 defaults — refine after outcome attribution ships)
-TAKE_PROFIT_ROI     = 0.20   # sell when unrealized gain >= 20% of entry price
-STOP_LOSS_ROI       = 0.17   # cut when unrealized loss >= 17% of entry price
+# Tunable thresholds. Defaults picked from the May-2026 backtest sweep: at TP=40%
+# the strategy went from -$1.16 to +$10.72 across 13 closed trades, with R/R 2.36.
+# Override via env if you want to retune without redeploying.
+TAKE_PROFIT_ROI     = float(os.getenv("TAKE_PROFIT_ROI", "0.40"))   # sell when unrealized gain >= 40% of entry price
+STOP_LOSS_ROI       = float(os.getenv("STOP_LOSS_ROI",   "0.17"))   # cut when unrealized loss  >= 17% of entry price
 PROFIT_LOCK_CAPTURE = 0.80   # backstop: take profit at 80% of max possible gain
 STOP_LOSS_THRESHOLD = 0.20   # backstop: cut at 20c against entry
 TIME_DECAY_HOURS    = 24     # resolves within X hours

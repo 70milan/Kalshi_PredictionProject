@@ -19,8 +19,13 @@ import sys
 import time
 import subprocess
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
+
+# EST = UTC-5; we use a fixed offset rather than zoneinfo so this works in the
+# slim Linux container without tzdata installed. DST drift is acceptable here —
+# this stamp is for human readability, not correctness-critical logic.
+EST = timezone(timedelta(hours=-5), name="EST")
 
 # ─────────────────────────────────────────────
 # PATHS
@@ -254,7 +259,11 @@ def run_etl_cycle():
     cycle_duration = time.time() - cycle_start_time
     mins = int(cycle_duration // 60)
     secs = int(cycle_duration % 60)
+    finished_utc = datetime.now(timezone.utc)
+    finished_est = finished_utc.astimezone(EST)
     print(f"\n[ETL] Cycle completed in {mins}m {secs}s")
+    print(f"[ETL] Finished at {finished_est.strftime('%Y-%m-%d %H:%M:%S EST')} "
+          f"({finished_utc.strftime('%H:%M:%S UTC')})")
     print(f"{'='*60}\n")
 
 

@@ -1016,16 +1016,25 @@ def get_backtest(days: int = 30, sim_bankroll: float = 1000.0, current_system_on
 # ─────────────────────────────────────────────
 
 @app.get("/api/backtest/positions")
-def get_position_backtest(days: int = 30, sim_bankroll: float = 1000.0, current_system_only: bool = False):
+def get_position_backtest(
+    days: int = 30,
+    sim_bankroll: float = 1000.0,
+    current_system_only: bool = False,
+    take_profit: float | None = None,
+    stop_loss: float | None = None,
+):
     """
     Strategy simulation: applies TAKE_PROFIT_ROI / STOP_LOSS_ROI triggers
     to the same signal backtest rows (from intelligence briefs), replaying
     the bronze price history from each brief date forward.
 
-    Answers: if we had taken every briefed signal and used 20%/17% exit rules,
-    what would have happened to each trade?
+    Defaults to the values in inference.exit_evaluator (env-driven). Pass
+    ?take_profit=0.30&stop_loss=0.17 to experiment without touching .env.
+    Values are ROI fractions: 0.20 = 20%, 0.40 = 40%, etc.
     """
-    from inference.exit_evaluator import TAKE_PROFIT_ROI, STOP_LOSS_ROI
+    from inference.exit_evaluator import TAKE_PROFIT_ROI as TP_DEFAULT, STOP_LOSS_ROI as SL_DEFAULT
+    TAKE_PROFIT_ROI = float(take_profit) if take_profit is not None else TP_DEFAULT
+    STOP_LOSS_ROI   = float(stop_loss)   if stop_loss   is not None else SL_DEFAULT
 
     if not os.path.exists(BRIEFS_PATH):
         return {"trades": [], "stats": {}}
@@ -1139,18 +1148,11 @@ def get_position_backtest(days: int = 30, sim_bankroll: float = 1000.0, current_
         else:
             qty = int(10.0 / entry_price) if entry_price > 0 else 0
 
-        # Entry timestamp — start walking from here
-        entry_ts = None
-        try:
-            entry_ts = pd.to_datetime(b["ingested_at"], utc=True)
-        except Exception:
-            pass
-
-        # Walk price history from brief date, apply exit triggers
-        ticker_hist = history_df[history_df["ticker"] == ticker].copy()
-        if entry_ts is not None:
-            ticker_hist = ticker_hist[ticker_hist["ts"] >= entry_ts]
-        ticker_hist = ticker_hist.sort_values("ts")
+        # Walk ALL price history for this ticker (chronological, not gated on brief
+        # timestamp). If +20% or -17% was ever crossed vs the briefed entry, close
+        # the trade at the THRESHOLD price — not the sparse snapshot value, which
+        # can be a crashed-gap point that wildly overstates the move.
+        ticker_hist = history_df[history_df["ticker"] == ticker].copy().sort_values("ts")
 
         exit_action = None
         exit_price  = None
@@ -1167,12 +1169,12 @@ def get_position_backtest(days: int = 30, sim_bankroll: float = 1000.0, current_
 
             if roi >= TAKE_PROFIT_ROI:
                 exit_action = "PROFIT_EXIT"
-                exit_price  = current_value
+                exit_price  = round(entry_price * (1 + TAKE_PROFIT_ROI), 4)
                 exit_ts     = snap["ts"]
                 break
             elif roi <= -STOP_LOSS_ROI:
                 exit_action = "STOP_EXIT"
-                exit_price  = current_value
+                exit_price  = round(entry_price * (1 - STOP_LOSS_ROI), 4)
                 exit_ts     = snap["ts"]
                 break
 

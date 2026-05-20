@@ -40,6 +40,13 @@ export default function App() {
   const [backtestCurrentOnly, setBacktestCurrentOnly] = useState(true);
   const [positionBacktestData, setPositionBacktestData] = useState(null);
   const [positionBacktestLoading, setPositionBacktestLoading] = useState(false);
+  // Tunable exit thresholds for the Backtest tab (percent units, e.g. "40" = 40%).
+  // Empty string = use server defaults from inference.exit_evaluator (.env / code).
+  const [tpInput, setTpInput] = useState('');
+  const [slInput, setSlInput] = useState('');
+  const [showFreshBriefs, setShowFreshBriefs] = useState(true);
+  const [showMidBriefs, setShowMidBriefs] = useState(false);
+  const [showAgedBriefs, setShowAgedBriefs] = useState(false);
   const toastTimer = useRef(null);
 
   const showToast = useCallback((msg) => {
@@ -125,16 +132,22 @@ export default function App() {
     } catch (_) { }
   }, []);
 
-  const fetchPositionBacktest = useCallback(async (currentOnly = backtestCurrentOnly) => {
+  const fetchPositionBacktest = useCallback(async (currentOnly = backtestCurrentOnly, tpPct = tpInput, slPct = slInput) => {
     setPositionBacktestLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/api/backtest/positions?days=30&current_system_only=${currentOnly}`);
+      // Convert percent input ("40") to ROI fraction (0.40) for the API.
+      const params = new URLSearchParams({ days: '30', current_system_only: String(currentOnly) });
+      const tpNum = parseFloat(tpPct);
+      const slNum = parseFloat(slPct);
+      if (!Number.isNaN(tpNum) && tpNum > 0) params.set('take_profit', String(tpNum / 100));
+      if (!Number.isNaN(slNum) && slNum > 0) params.set('stop_loss',   String(slNum / 100));
+      const res = await fetch(`${API_BASE}/api/backtest/positions?${params.toString()}`);
       if (!res.ok) return;
       const data = await res.json();
       setPositionBacktestData(data);
     } catch (_) { }
     finally { setPositionBacktestLoading(false); }
-  }, [backtestCurrentOnly]);
+  }, [backtestCurrentOnly, tpInput, slInput]);
 
   useEffect(() => {
     fetch(`${API_BASE}/api/config`)
@@ -167,7 +180,7 @@ export default function App() {
 
   const displayBriefs = sortedBriefs.filter(b => {
     if (sideFilters.length === 0) return true;
-    
+
     const isYes = b.recommended_side === 'yes' && !/no trade/i.test(b.verdict ?? '');
     const isNo = b.recommended_side === 'no' && !/no trade/i.test(b.verdict ?? '');
     const isNoTrade = /no trade/i.test(b.verdict ?? '');
@@ -176,9 +189,17 @@ export default function App() {
     if (sideFilters.includes('yes') && isYes) show = true;
     if (sideFilters.includes('no') && isNo) show = true;
     if (sideFilters.includes('notrade') && isNoTrade) show = true;
-    
+
     return show;
   });
+
+  // Split briefs into 3 buckets matching the staleness badge colors:
+  //   fresh (<3h, green)  ·  mid (3-6h, amber)  ·  aged (>6h, red)
+  const ageMinOf = (b) =>
+    b.ingested_at ? (Date.now() - new Date(b.ingested_at).getTime()) / 60_000 : 0;
+  const freshBriefs = displayBriefs.filter(b => ageMinOf(b) <= 180);
+  const midBriefs   = displayBriefs.filter(b => { const a = ageMinOf(b); return a > 180 && a <= 360; });
+  const agedBriefs  = displayBriefs.filter(b => ageMinOf(b) > 360);
 
   // How many minutes ago was latest.parquet written?
   const bronzeAgeMinutes = activeMarketsAsOf
@@ -203,6 +224,11 @@ export default function App() {
         </div>
 
         <div className="header-meta">
+          {import.meta.env.VITE_APP_ENV === 'dev' && (
+            <span style={{ fontSize: '0.62rem', color: 'var(--amber)', fontFamily: 'monospace', letterSpacing: '0.06em', background: 'var(--amber-dim)', padding: '1px 6px', borderRadius: '4px' }}>
+              DEV
+            </span>
+          )}
           {readonlyMode && (
             <span style={{ fontSize: '0.62rem', color: 'var(--text-muted)', fontFamily: 'monospace', letterSpacing: '0.06em', opacity: 0.7 }}>
               view only
@@ -383,11 +409,69 @@ export default function App() {
                       <button onClick={() => fetchPositionBacktest()} style={{ padding: '3px 10px', borderRadius: '5px', border: '1px solid var(--border)', fontSize: '0.62rem', cursor: 'pointer', background: 'transparent', color: 'var(--text-muted)' }}>
                         {positionBacktestLoading ? 'Loading…' : 'Refresh'}
                       </button>
-                      {positionBacktestData?.stats && (
-                        <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)', fontFamily: 'JetBrains Mono, monospace' }}>
-                          +{positionBacktestData.stats.take_profit_pct}% take profit · -{positionBacktestData.stats.stop_loss_pct}% stop loss
-                        </span>
-                      )}
+                      {positionBacktestData?.stats && (() => {
+                        const tpDefault = positionBacktestData.stats.take_profit_pct;
+                        const slDefault = positionBacktestData.stats.stop_loss_pct;
+                        const inputStyle = {
+                          width: '52px', padding: '2px 4px', fontSize: '0.62rem',
+                          background: 'var(--bg-card)', color: 'var(--text-primary)',
+                          border: '1px solid var(--border)', borderRadius: '4px',
+                          fontFamily: 'JetBrains Mono, monospace', textAlign: 'center',
+                        };
+                        const labelStyle = { fontSize: '0.58rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' };
+                        const apply = () => fetchPositionBacktest(backtestCurrentOnly, tpInput, slInput);
+                        const reset = () => { setTpInput(''); setSlInput(''); fetchPositionBacktest(backtestCurrentOnly, '', ''); };
+                        const isOverride = tpInput !== '' || slInput !== '';
+                        return (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                            <span style={labelStyle}>TP %</span>
+                            <input
+                              type="number" step="1" min="1" max="500"
+                              placeholder={`${tpDefault}`}
+                              value={tpInput}
+                              onChange={e => setTpInput(e.target.value)}
+                              onKeyDown={e => { if (e.key === 'Enter') apply(); }}
+                              style={inputStyle}
+                            />
+                            <span style={labelStyle}>SL %</span>
+                            <input
+                              type="number" step="1" min="1" max="100"
+                              placeholder={`${slDefault}`}
+                              value={slInput}
+                              onChange={e => setSlInput(e.target.value)}
+                              onKeyDown={e => { if (e.key === 'Enter') apply(); }}
+                              style={inputStyle}
+                            />
+                            <button
+                              onClick={apply}
+                              disabled={positionBacktestLoading || !isOverride}
+                              style={{
+                                padding: '3px 10px', borderRadius: '5px',
+                                border: '1px solid var(--border-strong)',
+                                fontSize: '0.62rem', cursor: positionBacktestLoading || !isOverride ? 'not-allowed' : 'pointer',
+                                background: isOverride ? 'var(--bg-surface)' : 'transparent',
+                                color: isOverride ? 'var(--text-primary)' : 'var(--text-muted)',
+                                opacity: positionBacktestLoading || !isOverride ? 0.5 : 1,
+                              }}
+                            >Apply</button>
+                            {isOverride && (
+                              <button
+                                onClick={reset}
+                                disabled={positionBacktestLoading}
+                                style={{
+                                  padding: '3px 8px', borderRadius: '5px',
+                                  border: '1px solid var(--border)',
+                                  fontSize: '0.6rem', cursor: 'pointer',
+                                  background: 'transparent', color: 'var(--text-muted)',
+                                }}
+                              >Reset</button>
+                            )}
+                            <span style={{ fontSize: '0.58rem', color: 'var(--text-muted)', fontFamily: 'JetBrains Mono, monospace', marginLeft: 'auto' }}>
+                              now: +{tpDefault}% / -{slDefault}%
+                            </span>
+                          </div>
+                        );
+                      })()}
                     </div>
 
                     {positionBacktestLoading && !positionBacktestData ? (
@@ -777,18 +861,66 @@ export default function App() {
             </div>
           </div>
         ) : (
-          <div className="briefs-grid">
-            {displayBriefs.map(brief => (
-              <MispricingCard
-                key={brief.ticker}
-                brief={brief}
-                bankroll={bankroll}
-                readonly={readonlyMode}
-                onTradeResult={showToast}
-                onTradeComplete={fetchOrders}
-              />
-            ))}
-          </div>
+          <>
+            {(() => {
+              const renderSection = (label, items, open, setOpen, dotColor, marginTop) => {
+                const isEmpty = items.length === 0;
+                return (
+                  <div style={{ marginTop }}>
+                    <button
+                      onClick={() => !isEmpty && setOpen(v => !v)}
+                      disabled={isEmpty}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        width: '100%',
+                        padding: '10px 14px',
+                        borderRadius: '6px',
+                        border: '1px solid var(--border)',
+                        background: 'var(--bg-surface)',
+                        color: 'var(--text-secondary)',
+                        fontSize: '0.72rem',
+                        fontFamily: 'JetBrains Mono, monospace',
+                        letterSpacing: '0.04em',
+                        cursor: isEmpty ? 'default' : 'pointer',
+                        textAlign: 'left',
+                        opacity: isEmpty ? 0.55 : 1,
+                      }}
+                    >
+                      <span style={{ color: dotColor, width: '0.7em', display: 'inline-block' }}>
+                        {isEmpty ? '·' : (open ? '▾' : '▸')}
+                      </span>
+                      <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: dotColor }} />
+                      <span>{label}</span>
+                      <span style={{ color: 'var(--text-muted)' }}>· {items.length} {items.length === 1 ? 'signal' : 'signals'}</span>
+                    </button>
+                    {open && !isEmpty && (
+                      <div className="briefs-grid" style={{ marginTop: '0.75rem' }}>
+                        {items.map(brief => (
+                          <MispricingCard
+                            key={brief.ticker}
+                            brief={brief}
+                            bankroll={bankroll}
+                            readonly={readonlyMode}
+                            onTradeResult={showToast}
+                            onTradeComplete={fetchOrders}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              };
+              return (
+                <>
+                  {renderSection('3hrs-',  freshBriefs, showFreshBriefs, setShowFreshBriefs, 'var(--green)', 0)}
+                  {renderSection('3-6hrs', midBriefs,   showMidBriefs,   setShowMidBriefs,   'var(--amber)', '1rem')}
+                  {renderSection('6hrs+',  agedBriefs,  showAgedBriefs,  setShowAgedBriefs,  'var(--red)',   '1rem')}
+                </>
+              );
+            })()}
+          </>
         )}
 
       </div>

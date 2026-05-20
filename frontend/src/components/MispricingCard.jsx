@@ -126,17 +126,15 @@ export default function MispricingCard({ brief, bankroll, readonly = false, onTr
 
   const briefDate = new Date(brief.ingested_at);
   const ageMin = (Date.now() - briefDate.getTime()) / (1000 * 60);
-  
+
   const freshnessColor =
-    ageMin <= 30  ? 'var(--blue)'   :
-    ageMin <= 90  ? 'var(--green)'  :
-    ageMin <= 180 ? 'var(--amber)'  :
-    ageMin <= 360 ? '#e89556'       :
+    ageMin <= 180 ? 'var(--green)' :
+    ageMin <= 360 ? 'var(--amber)' :
                     'var(--red)';
 
   const freshnessTitle =
-    ageMin <= 30  ? 'New (< 30m)'                       :
-    ageMin <= 90  ? `Fresh (${Math.floor(ageMin)}m ago)` :
+    ageMin <= 180 ? `Fresh (${ageMin < 60 ? `${Math.floor(ageMin)}m` : `${(ageMin / 60).toFixed(1)}h`} ago)` :
+    ageMin <= 360 ? `Aging (${(ageMin / 60).toFixed(1)}h ago)` :
                     `Stale (${(ageMin / 60).toFixed(1)}h ago)`;
 
   const tradeBtnLabel =
