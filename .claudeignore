@@ -1,0 +1,94 @@
+# =============================================================================
+# .claudeignore — files Claude Code should NOT load into prompt context
+# Saves tokens. Code in these dirs is still on disk and runs normally.
+# =============================================================================
+
+# ---- Data lake (huge, binary, regenerated) ----
+data/
+**/*.parquet
+**/*.delta
+**/_delta_log/
+**/*.duckdb
+**/*.duckdb.wal
+**/*.duckdb.tmp
+**/chroma/
+**/*.sqlite
+**/*.sqlite3
+**/*.db
+
+# ---- Python venvs ----
+.venv/
+venv/
+recreate/          # local venv directory (has pyvenv.cfg)
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/.mypy_cache/
+**/.pytest_cache/
+**/.ruff_cache/
+
+# ---- Node / frontend build artifacts ----
+**/node_modules/
+**/dist/
+**/build/
+**/.vite/
+**/.next/
+**/coverage/
+frontend/package-lock.json
+
+# ---- Logs, scratch, one-off probes ----
+scratch/
+**/*.log
+**/replay_log*.json
+**/inference_run*.log
+
+# ---- Secrets / env (also covered by .gitignore but be explicit) ----
+.env
+.env_test
+.env.*
+**/*.pem
+**/*.key
+
+# ---- Lock / watermark / marker files ----
+**/.etl_watermark
+**/.daily_settlement_marker
+**/.kalshi_api.lock
+
+# ---- Docs / planning text the model rarely needs ----
+artifacts/
+docs/
+reference/
+research/
+ingestion_text/
+MOBILE_DASHBOARD_GUIDE.md
+PredictIQ_Thesis.md
+README-DOCKER.md
+README_docker.txt
+Service_management_prod.txt
+kalshi_api.txt
+
+# ---- Spark / Java cruft ----
+**/spark-warehouse/
+**/derby.log
+**/metastore_db/
+**/*.crc
+**/_SUCCESS
+
+# ---- OS / editor noise ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# ---- Test / scratch scripts at repo root ----
+test.json
+spark_test.py
+test_scrapers.py
+tmp_schema_check.py
+fast_peek.py
+peek_bronze.py
+inspect_parquet.py
+cache_delta_jars.py
+dockerize_target.py

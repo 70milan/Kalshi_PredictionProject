@@ -71,17 +71,26 @@ export default function MispricingCard({ brief, bankroll, readonly = false, onTr
     if (!confirm) return;
     setExecuting(true);
     const { side, priceDollars } = confirm;
+
+    // Safety check: cap cost at 50% of bankroll per trade (prevents UI bugs from inflating bets)
+    const maxCost = (bankroll || 500) * 0.5;
+    let finalCount = confirmCount;
+    if (confirmCount * priceDollars > maxCost) {
+      finalCount = Math.floor(maxCost / priceDollars);
+      if (finalCount < 1) finalCount = 1;
+    }
+
     const displayPrice = `${(priceDollars * 100).toFixed(1)}¢`;
     try {
       const res = await fetch(`${API_BASE}/api/trade`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ticker: brief.ticker, side, count: confirmCount, price_dollars: priceDollars }),
+        body: JSON.stringify({ ticker: brief.ticker, side, count: finalCount, price_dollars: priceDollars }),
       });
       const data = await res.json();
       setConfirm(null);
       if (data.status === 'SAFE_MODE_LOGGED') {
-        onTradeResult({ type: 'warning', message: `Simulated: ${brief.ticker} [${side.toUpperCase()}] ${confirmCount}x @ ${displayPrice}` });
+        onTradeResult({ type: 'warning', message: `Simulated: ${brief.ticker} [${side.toUpperCase()}] ${finalCount}x @ ${displayPrice}` });
       } else {
         const orderStatus = data.order_status ?? 'submitted';
         const filled = data.fill_count ?? '0';
@@ -93,7 +102,7 @@ export default function MispricingCard({ brief, bankroll, readonly = false, onTr
           `Status: ${orderStatus}`;
         onTradeResult({
           type: orderStatus === 'filled' ? 'success' : 'warning',
-          message: `${brief.ticker} [${side.toUpperCase()}] ${confirmCount}x @ ${displayPrice} — ${statusLabel}`,
+          message: `${brief.ticker} [${side.toUpperCase()}] ${finalCount}x @ ${displayPrice} — ${statusLabel}`,
         });
       }
     } catch (err) {

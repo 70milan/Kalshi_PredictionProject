@@ -9,13 +9,17 @@ from datetime import datetime, timezone
 from dateutil import parser
 
 # Force PySpark workers to use the exact virtual environment Python executable
+# Using legacy 8.3 Short Path to avoid spaces that break Spark .cmd files on Windows
 SHORT_PYTHON = "C:/DATAEN~1/codeprep/PREDEC~1/.venv/Scripts/python.exe"
 os.environ["PYSPARK_PYTHON"] = SHORT_PYTHON
 os.environ["PYSPARK_DRIVER_PYTHON"] = SHORT_PYTHON
 
-if os.environ.get("HADOOP_HOME", ""):
-    os.environ["PATH"] = os.path.join(os.environ["HADOOP_HOME"], "bin") + ";" + os.environ.get("PATH", "")
+# Windows compatibility: ensure HADOOP_HOME bin is on PATH if env var is set
+_hadoop_home = os.environ.get("HADOOP_HOME", "")
+if _hadoop_home:
+    os.environ["PATH"] = os.path.join(_hadoop_home, "bin") + ";" + os.environ.get("PATH", "")
 
+# Fix Windows PySpark BlockManager NullPointerException (Heartbeat loop)
 os.environ["SPARK_LOCAL_IP"] = "127.0.0.1"
 
 from pyspark.sql import SparkSession
@@ -31,43 +35,41 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # ─────────────────────────────────────────────
 
 def get_source_watermarks(spark, silver_path):
-    """Returns a dictionary of {feed_key: max_ingested_at} from the Silver table."""
+    """Returns a dictionary of {source: max_ingested_at} from the Silver table."""
     watermarks = {}
     delta_log = os.path.join(silver_path, "_delta_log")
     if os.path.exists(delta_log):
         try:
+            # We use distinct sources to get the watermark for each one
             df = spark.read.format("delta").load(silver_path)
-            # REFACTORED: Track by 'feed_key' since 'source' can be shared (e.g., Politico, ABC News)
-            res = df.groupBy("feed_key").agg(F.max("ingested_at")).collect()
+            res = df.groupBy("source").agg(F.max("ingested_at")).collect()
             for row in res:
-                if row[0]:
+                if row[0]: # Handle potential null source
                     watermarks[row[0].strip().lower()] = row[1]
         except Exception:
             pass
     return watermarks
 
 
-def read_bronze_incremental(spark, ROOT, watermarks):
-    """Dynamically reads Bronze Parquet files from /data/bronze/news/*, applying source watermarks."""
+def read_bronze_incremental(spark, news_sources, ROOT, watermarks):
+    """Read Bronze Parquet files source-by-source, applying source-specific watermarks."""
     dfs = []
     
-    # REFACTORED: Dynamically evaluate directories based on the new ingestion architecture path layout
-    bronze_news_base = os.path.join(ROOT, "data", "bronze", "news")
-    if not os.path.isdir(bronze_news_base):
-        print(f"[Silver News] Base bronze directory missing: {bronze_news_base}")
-        return None
+    for source in news_sources:
+        source_dir = os.path.join(ROOT, "data", "bronze", source)
+        if not os.path.isdir(source_dir):
+            continue
+            
+        # Map folder names to database source names to fix watermark lookup
+        SOURCE_MAP = {
+            "foxnews": "fox news",
+            "nypost": "ny post",
+            "hindu": "the hindu"
+        }
         
-    # Discover all feed keys inside the news directory (ignoring congress data structures)
-    news_feeds = [
-        d for d in os.listdir(bronze_news_base) 
-        if os.path.isdir(os.path.join(bronze_news_base, d)) and d != "congress_bills"
-    ]
-    
-    print(f"[Silver News] Discovered {len(news_feeds)} active media feed keys in delta landing zone.")
-
-    for feed_key in news_feeds:
-        source_dir = os.path.join(bronze_news_base, feed_key)
-        source_key = feed_key.strip().lower()
+        # Apply source-specific watermark
+        base_source = source.strip().lower()
+        source_key = SOURCE_MAP.get(base_source, base_source)
         
         watermark_ts = 0
         if source_key in watermarks:
@@ -75,12 +77,13 @@ def read_bronze_incremental(spark, ROOT, watermarks):
                 wm_dt = parser.parse(str(watermarks[source_key]))
                 if wm_dt.tzinfo is None:
                     wm_dt = wm_dt.replace(tzinfo=timezone.utc)
-                # 1h safety buffer to handle file mtime alignment safely
+                # 1h safety buffer: never skip a file due to mtime/ingested_at
+                # clock slop. The row-level filter dedups the overlap exactly.
                 watermark_ts = wm_dt.timestamp() - 3600
             except Exception:
                 pass
                 
-        # Discover files for this specific news feed partition
+        # Discover files for this specific source
         source_files = []
         for r, d, f in os.walk(source_dir):
             for filename in fnmatch.filter(f, "*.parquet"):
@@ -96,10 +99,15 @@ def read_bronze_incremental(spark, ROOT, watermarks):
         if not source_files:
             continue
             
+        # Read files for this source
         df_source = spark.read.option("mergeSchema", "true").parquet(*source_files)
         
         if source_key in watermarks:
             wm = str(watermarks[source_key])
+            # Compare as real timestamps, not strings. Bronze ingested_at uses an
+            # ISO 'T' separator; the Silver-derived watermark uses a space. Raw
+            # string comparison sorted 'T' (84) above ' ' (32), so every same-day
+            # article re-passed every cycle — re-appending ~7800 dupes per run.
             df_source = df_source.filter(
                 F.to_timestamp(F.col("ingested_at")) > F.to_timestamp(F.lit(wm))
             )
@@ -109,6 +117,7 @@ def read_bronze_incremental(spark, ROOT, watermarks):
     if not dfs:
         return None
         
+    # Union all sources into one master DataFrame
     master_df = dfs[0]
     for next_df in dfs[1:]:
         master_df = master_df.unionByName(next_df, allowMissingColumns=True)
@@ -117,13 +126,24 @@ def read_bronze_incremental(spark, ROOT, watermarks):
 
 
 def write_history(spark, df, silver_path):
-    """Append enriched rows to Silver Delta table."""
+    """Append enriched rows to Silver Delta table. Idempotency is handled by the Source-Level Watermarks."""
     print(f"[Silver News] Appending {df.count()} rows to Delta at {silver_path}...")
     df.write.format("delta").mode("append").option("mergeSchema", "true").save(silver_path)
 
 
 # ─────────────────────────────────────────────
-# TRANSFORM (Driver-based, Zero-Worker Write JSON Bridge)
+# TRANSFORM (Driver-based, Zero-Worker Write)
+#
+# ARCHITECTURE: "JSON Bridge" pattern
+# On this Windows environment, ALL PySpark Python worker processes crash.
+# pyarrow import also hangs. So we:
+# 1. Read Bronze with Spark (pure JVM read of Parquet — stable)
+# 2. Collect to Pandas via toPandas() (JVM collectToPython — stable)
+# 3. Enrich entirely in Pandas on the driver (pure Python — stable)
+# 4. Save enriched data as temp JSON using built-in json (no pyarrow needed)
+# 5. Read the temp JSON back with Spark (pure JVM read — stable)
+# 6. Cast timestamp columns and write to Delta (pure JVM — stable)
+# Result: Python workers are NEVER invoked.
 # ─────────────────────────────────────────────
 
 def enrich_on_driver(pdf):
@@ -131,7 +151,7 @@ def enrich_on_driver(pdf):
     if len(pdf) == 0:
         return pdf
 
-    # 1. Normalize published_at across feeds
+    # 1. Normalize published_at from various source column names
     if "published_at" not in pdf.columns:
         pdf["published_at"] = None
 
@@ -143,13 +163,17 @@ def enrich_on_driver(pdf):
         pdf["published_at"] = pdf["published_at"].fillna(pdf["published"])
         pdf.drop(columns=["published"], inplace=True)
 
+    # 2. Robust date parsing
+    # RSS and News APIs use a variety of columns for dates. Normalize them all.
     date_cols = ["published_at", "pubDate", "pubdate", "published", "date", "created_at"]
     
     def parse_dt(row):
+        # Try every possible column
         for c in date_cols:
             val = row.get(c)
             if val and str(val).strip():
                 try:
+                    # dateutil parses: ISO, RSS (RFC822), Month Day Year, etc.
                     dt = parser.parse(str(val))
                     if dt.tzinfo is None:
                         dt = dt.replace(tzinfo=timezone.utc)
@@ -161,16 +185,19 @@ def enrich_on_driver(pdf):
     print("[Silver News] Parsing dates with dateutil...")
     pdf["published_at"] = pdf.apply(parse_dt, axis=1)
     
+    # Ingested_at is usually ISO or a standard string, but let's be safe
     pdf["ingested_at"] = pdf["ingested_at"].apply(
         lambda x: parser.parse(str(x)).strftime("%Y-%m-%d %H:%M:%S") if x else None
     )
 
+    # 3. Ensure text columns exist
     for col in ["summary", "full_text", "title"]:
         if col not in pdf.columns:
             pdf[col] = ""
         else:
             pdf[col] = pdf[col].fillna("").astype(str)
 
+    # 4. Select richest text for sentiment
     def pick_text(row):
         if len(row["full_text"].strip()) > 0:
             return row["full_text"], "full_text"
@@ -182,6 +209,7 @@ def enrich_on_driver(pdf):
     pdf["_sent_text"] = [r[0] for r in results]
     pdf["sentiment_source"] = [r[1] for r in results]
 
+    # 5. VADER sentiment
     print(f"[Silver News] Running VADER on {len(pdf)} rows...")
     analyzer = SentimentIntensityAnalyzer()
 
@@ -199,31 +227,42 @@ def enrich_on_driver(pdf):
     return pdf
 
 
+# ─────────────────────────────────────────────
+# MAIN
+# ─────────────────────────────────────────────
+
 def run(spark):
-    """Runs the transform using a caller-managed SparkSession."""
+    """Runs the transform using a caller-managed SparkSession (no spark.stop)."""
+    news_sources = ["bbc", "cnn", "foxnews", "nypost", "nyt", "thehindu"]
     silver_path = os.path.join(ROOT, "data", "silver", "news_articles_enriched")
     tmp_json_dir = os.path.join(ROOT, "data", "silver", "_tmp_news_json")
 
     try:
+        # 1. Source-Level Watermarks
         watermarks = get_source_watermarks(spark, silver_path)
-        print(f"[Silver News] Current feed key watermarks: {list(watermarks.keys())}")
+        print(f"[Silver News] Current source watermarks: {list(watermarks.keys())}")
 
-        # REFACTORED: Pass only spark and ROOT contexts to calculate inputs dynamically
-        df = read_bronze_incremental(spark, ROOT, watermarks)
+        # 2. Read incremental (Source-by-Source)
+        df = read_bronze_incremental(spark, news_sources, ROOT, watermarks)
         if df is None or df.isEmpty():
             print("[Silver News] No new data found across all sources. Skipping.")
             return
 
+        # 3. Collect to Pandas (stable JVM bridge)
         print("[Silver News] Collecting Bronze rows to driver...")
         pdf = df.toPandas()
         print(f"[Silver News] Collected {len(pdf)} rows.")
 
+        # 4. Enrich on driver (pure Python — stable)
         pdf = enrich_on_driver(pdf)
 
+        # 5. JSON BRIDGE: Save enriched data as JSON lines, read back with Spark
         print("[Silver News] Writing temp JSON (JSON Bridge)...")
         os.makedirs(tmp_json_dir, exist_ok=True)
         tmp_json_file = os.path.join(tmp_json_dir, "data.json")
 
+        # Sanitize ALL NaN/NaT/None values to Python None before serialization
+        # This prevents json.dumps(default=str) from writing "NaN" strings
         def sanitize_value(v):
             if v is None:
                 return None
@@ -244,6 +283,7 @@ def run(spark):
         print("[Silver News] Reading back via Spark (pure JVM)...")
         df_enriched = spark.read.json(tmp_json_file)
 
+        # Safe timestamp casting — guard against any residual bad strings
         for ts_col in ["ingested_at", "published_at"]:
             if ts_col in df_enriched.columns:
                 df_enriched = df_enriched.withColumn(
@@ -255,6 +295,7 @@ def run(spark):
                     ).otherwise(F.lit(None).cast(TimestampType()))
                 )
 
+        # 6. Write to Delta (pure JVM — stable)
         print("[Silver News] Writing to Silver Delta table...")
         write_history(spark, df_enriched, silver_path)
         print("[Silver News] Run Successful.")
@@ -263,6 +304,7 @@ def run(spark):
         print(f"[Silver News] FATAL: {str(e)}")
         raise e
     finally:
+        # Clean up temp files
         import shutil
         if os.path.exists(tmp_json_dir):
             try:

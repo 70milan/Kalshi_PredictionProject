@@ -291,17 +291,20 @@ def get_intelligence():
     finally:
         con.close()
 
-    # Fetch live Kalshi balance to use for Kelly Criterion. Fallback to DEFAULT_BANKROLL on error.
+    # In SAFE_MODE use DEFAULT_BANKROLL (the .env value) for Kelly sizing.
+    # The demo API balance is fake money and must not drive real bet sizes.
+    # In live mode, fetch the actual account balance from Kalshi.
     active_bankroll = DEFAULT_BANKROLL
-    try:
-        balance_headers = _sign_kalshi_request("GET", "/trade-api/v2/portfolio/balance")
-        r_bal = requests.get(f"{KALSHI_BASE_URL}/portfolio/balance", headers=balance_headers, timeout=5)
-        if r_bal.status_code == 200:
-            bal_cents = r_bal.json().get("balance", 0)
-            if bal_cents > 0:
-                active_bankroll = float(bal_cents) / 100.0
-    except Exception as e:
-        print(f"[API ERROR] Failed to fetch Kalshi balance: {e}")
+    if not SAFE_MODE:
+        try:
+            balance_headers = _sign_kalshi_request("GET", "/trade-api/v2/portfolio/balance")
+            r_bal = requests.get(f"{KALSHI_BASE_URL}/portfolio/balance", headers=balance_headers, timeout=5)
+            if r_bal.status_code == 200:
+                bal_cents = r_bal.json().get("balance", 0)
+                if bal_cents > 0:
+                    active_bankroll = float(bal_cents) / 100.0
+        except Exception as e:
+            print(f"[API ERROR] Failed to fetch Kalshi balance: {e}")
 
     # Calibration sample for Kelly sizing: how many briefed markets have resolved.
     # Until this reaches MIN_CALIBRATION_SAMPLES, kelly_math clamps every bet flat
@@ -599,6 +602,13 @@ def execute_trade(trade: TradeRequest, request: Request):
     """Submits a trade to Kalshi. Guard-railed by SAFE_MODE."""
     if READONLY_MODE or _is_public_request(request):
         raise HTTPException(status_code=403, detail="Read-only mode — trading disabled.")
+
+    # Sanity check: warn if trade cost exceeds 10% of bankroll (catches UI bugs)
+    trade_cost = trade.count * trade.price_dollars
+    max_reasonable = DEFAULT_BANKROLL * 0.10
+    if trade_cost > max_reasonable:
+        print(f"[TRADE WARNING] Unreasonable size: {trade.count}x @ ${trade.price_dollars:.4f} = ${trade_cost:.2f} (bankroll cap: ${max_reasonable:.2f}). Likely UI bug.")
+
     if SAFE_MODE:
         file_exists = os.path.isfile(SIMULATED_TRADES_PATH)
         with open(SIMULATED_TRADES_PATH, "a", encoding="utf-8") as f:
@@ -1221,7 +1231,10 @@ def get_position_backtest(
         """).df()
 
         if briefs_df.empty:
-            return {"trades": [], "stats": {}}
+            return {"trades": [], "stats": {
+                "take_profit_pct": round(TAKE_PROFIT_ROI * 100),
+                "stop_loss_pct":   round(STOP_LOSS_ROI   * 100),
+            }}
 
         tickers = briefs_df["ticker"].tolist()
         tickers_sql = ", ".join(f"'{t}'" for t in tickers)

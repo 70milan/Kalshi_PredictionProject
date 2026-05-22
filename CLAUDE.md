@@ -17,8 +17,8 @@ PredictIQ is a prediction-market intelligence pipeline. It ingests news and mark
 
 ### Sync mechanism — Syncthing over Tailscale (no git push to deploy)
 
-- **Dev → Prod**: code files sync automatically. Editing a file locally deploys it within seconds.
-- **Prod → Dev**: `data/` directory syncs back so local reads reflect live data.
+- **Dev → Prod**: code files sync automatically. Editing a file locally deploys it within seconds. The code only syncs dev to prod
+- **Prod → Dev**: `data/` directory syncs back so local reads reflect live data. The data only syncs prod to dev 
 - **Do not** `git push` to deploy. Just save the file.
 
 ### Portainer

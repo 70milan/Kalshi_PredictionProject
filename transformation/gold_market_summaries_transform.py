@@ -147,21 +147,100 @@ def generate_mispricing_scores(spark, kalshi_history_path, gdelt_summaries_path,
     else:
         df_joined_persons = spark.createDataFrame([], "ticker string, vol_spike_multiplier double, norm_sentiment double")
 
-    # --- C. News Source Joins (Broad signal fallback) ---
-    # Note: News is source-level, so we only join if the market series matches a hypothetical 'news_topic' 
-    # For now, we union any mapped news signal if available
-    df_joined_news = spark.createDataFrame([], "ticker string, vol_spike_multiplier double, norm_sentiment double")
-    # (Future: add source-to-series mapping if needed)
+    # --- C. News Headline Keyword Joins ---
+    # Strategy: extract significant words from silver article headlines (last 24h),
+    # match those words against Kalshi market titles, then route each matched feed's
+    # spike signal (from gold news summaries) to the relevant ticker.
+    # This mirrors exactly how GDELT person-entity matching works but uses free-text
+    # headlines instead of structured entity names.
+    silver_news_path = os.path.join(ROOT, "data", "silver", "news_articles_enriched")
+    if df_n is not None and os.path.exists(os.path.join(silver_news_path, "_delta_log")):
+        cutoff_24h = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
 
-    # Combine All Signals
+        # Words too common to be meaningful signal — matching "will" would link every
+        # political article to every Kalshi market. Numbers kept (e.g. "702", "220").
+        STOPWORDS = {
+            "will", "the", "this", "that", "with", "from", "have", "been",
+            "than", "more", "about", "what", "when", "where", "which", "their",
+            "they", "would", "could", "should", "after", "before", "into", "over",
+            "make", "some", "just", "like", "then", "also", "only", "says", "said",
+            "week", "next", "last", "year", "amid", "ahead",
+        }
+
+        # Step 1: Read silver articles from last 24h, explode titles into (feed_key, word) pairs.
+        # distinct() is critical — collapses 50 BBC articles about FISA into one
+        # ("bbc", "fisa") pair so we don't artificially amplify the spike.
+        df_silver_articles = (
+            spark.read.format("delta").load(silver_news_path)
+            .filter(F.col("ingested_at").cast("string") >= cutoff_24h)
+            .filter(F.col("title").isNotNull())
+            .select("feed_key", F.col("title").alias("article_title"))
+        )
+        df_source_words = (
+            df_silver_articles
+            .withColumn(
+                "clean_title",
+                F.lower(F.regexp_replace(F.col("article_title"), "[^a-zA-Z0-9 ]", ""))
+            )
+            .withColumn("word", F.explode(F.split(F.col("clean_title"), " ")))
+            .filter(F.length(F.col("word")) > 3)
+            .filter(~F.col("word").isin(list(STOPWORDS)))
+            .select("feed_key", "word")
+            .distinct()
+        )
+
+        # Step 2: CrossJoin (feed_key, word) × market titles, keep rows where the
+        # keyword appears in the market title. Broadcast the market titles since
+        # they're small (~200-500 rows) vs potentially thousands of keyword pairs.
+        df_kalshi_titles_lower = df_latest.select(
+            "ticker",
+            F.lower(F.col("title")).alias("market_title_lower")
+        )
+        df_news_keyword_matches = (
+            df_source_words
+            .crossJoin(F.broadcast(df_kalshi_titles_lower))
+            .filter(F.col("market_title_lower").contains(F.col("word")))
+            .select("ticker", "feed_key", F.col("word").alias("keyword"))
+            .distinct()
+        )
+
+        # Step 3: Join to gold news summaries on (feed_key, keyword) — topic-specific spike.
+        # df_n now has one row per (feed_key, keyword) with keyword-level vol_spike_multiplier
+        # and tone_15m (VADER, already -1/+1). Rename tone_15m → norm_sentiment to match
+        # the schema expected by the downstream union and mispricing score formula.
+        df_joined_news = (
+            df_news_keyword_matches
+            .join(
+                df_n.select("feed_key", "keyword", "vol_spike_multiplier",
+                            F.col("tone_15m").alias("norm_sentiment")),
+                on=["feed_key", "keyword"],
+                how="inner"
+            )
+            .select("ticker", "vol_spike_multiplier", "norm_sentiment")
+        )
+        print("[Gold Synthesizer] News keyword routing: "
+              f"{df_news_keyword_matches.count()} (ticker, feed) matches found.")
+    else:
+        df_joined_news = spark.createDataFrame(
+            [], "ticker string, vol_spike_multiplier double, norm_sentiment double"
+        )
+
+    # Combine All Signals (GDELT themes + GDELT persons + news keywords)
     df_all_matches = df_joined_themes.unionAll(df_joined_persons).unionAll(df_joined_news)
 
-    # Aggregate to find the Best Opportunity per Market (Max weighted signal)
-    # We want the highest vol_spike but also consider the sentiment strength
-    df_max_signal = df_all_matches.groupBy("ticker").agg(
-        F.max("vol_spike_multiplier").alias("max_spike_multiplier"),
-        F.last("norm_sentiment").alias("avg_sentiment") # Use the sentiment associated with the entity
-    )
+    # Aggregate per ticker: pick the sentiment from the row with the highest spike.
+    # F.last() was non-deterministic — instead we use a window to rank by spike desc
+    # and take the sentiment from rank=1 (the strongest signal source).
+    win_top_spike = Window.partitionBy("ticker").orderBy(F.col("vol_spike_multiplier").desc())
+    df_max_signal = df_all_matches \
+        .withColumn("_rn", F.row_number().over(win_top_spike)) \
+        .filter(F.col("_rn") == 1) \
+        .drop("_rn") \
+        .select(
+            "ticker",
+            F.col("vol_spike_multiplier").alias("max_spike_multiplier"),
+            F.col("norm_sentiment").alias("avg_sentiment"),
+        )
 
     # Join back to Market Data
     df_final = df_latest.join(df_max_signal, on="ticker", how="left")

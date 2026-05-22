@@ -38,6 +38,7 @@ Follow the logs of just one job to debug it.
 ```bash
 docker logs -f predictiq_ingest_kalshi_active
 docker logs -f predictiq_transform_news
+docker logs -f predictiq_spark_etl
 ```
 
 ---docker compose stop ingest-kalshi-daily

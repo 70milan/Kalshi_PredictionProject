@@ -15,62 +15,172 @@ services:
     working_dir: /app
 
   # ─────────────────────────────────────────────
-  # BRONZE INGESTORS (9 lightweight Python daemons)
+  # 1. LEGISLATIVE TICKER ENGINE (CONGRESS.GOV API)
   # ─────────────────────────────────────────────
-  ingest-bbc:
+  congress-ingest:
     build: .
-    container_name: predictiq_ingest_bbc
+    container_name: predictiq-congress-daemon
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+    working_dir: /app
+    command: python3 -u ingestion/congress_legislative_ingest.py --daemon
+
+  # ─────────────────────────────────────────────
+  # 2. UNIFIED LEFT WING / MAINSTREAM MEDIA WORKERS
+  # ─────────────────────────────────────────────
+  politico-picks-worker:
+    build: .
+    container_name: worker-left-politico-picks
     restart: unless-stopped
     volumes:
       - .:/app
-    command: ["python3", "-u", "ingestion/bbc_ingest.py"]
     working_dir: /app
+    command: python3 -u ingestion/unified_left_ingest.py --source politico_picks --daemon
 
-  ingest-cnn:
+  politico-congress-worker:
     build: .
-    container_name: predictiq_ingest_cnn
+    container_name: worker-left-politico-congress
     restart: unless-stopped
     volumes:
       - .:/app
-    command: ["python3", "-u", "ingestion/cnn_ingest.py"]
     working_dir: /app
+    command: python3 -u ingestion/unified_left_ingest.py --source politico_congress --daemon
 
-  ingest-fox:
+  politico-healthcare-worker:
     build: .
-    container_name: predictiq_ingest_fox
+    container_name: worker-left-politico-healthcare
     restart: unless-stopped
     volumes:
       - .:/app
-    command: ["python3", "-u", "ingestion/fox_ingest.py"]
     working_dir: /app
+    command: python3 -u ingestion/unified_left_ingest.py --source politico_healthcare --daemon
 
-  ingest-hindu:
+  abc-topstories-worker:
     build: .
-    container_name: predictiq_ingest_hindu
+    container_name: worker-left-abc-topstories
     restart: unless-stopped
     volumes:
       - .:/app
-    command: ["python3", "-u", "ingestion/hindu_ingest.py"]
     working_dir: /app
+    command: python3 -u ingestion/unified_left_ingest.py --source abc_topstories --daemon
 
-  ingest-nypost:
+  abc-politics-worker:
     build: .
-    container_name: predictiq_ingest_nypost
+    container_name: worker-left-abc-politics
     restart: unless-stopped
     volumes:
       - .:/app
-    command: ["python3", "-u", "ingestion/nypost_ingest.py"]
     working_dir: /app
+    command: python3 -u ingestion/unified_left_ingest.py --source abc_politics --daemon
 
-  ingest-nyt:
+  ap-politics-worker:
     build: .
-    container_name: predictiq_ingest_nyt
+    container_name: worker-left-ap-politics
     restart: unless-stopped
     volumes:
       - .:/app
-    command: ["python3", "-u", "ingestion/nyt_news_ingest.py"]
     working_dir: /app
+    command: python3 -u ingestion/unified_left_ingest.py --source ap_politics --daemon
 
+  npr-politics-worker:
+    build: .
+    container_name: worker-left-npr-politics
+    restart: unless-stopped
+    volumes:
+      - .:/app
+    working_dir: /app
+    command: python3 -u ingestion/unified_left_ingest.py --source npr_politics --daemon
+
+  thehill-worker:
+    build: .
+    container_name: worker-left-thehill
+    restart: unless-stopped
+    volumes:
+      - .:/app
+    working_dir: /app
+    command: python3 -u ingestion/unified_left_ingest.py --source the_hill --daemon
+
+  nyt-worker:
+    build: .
+    container_name: worker-left-nyt
+    restart: unless-stopped
+    volumes:
+      - .:/app
+    working_dir: /app
+    command: python3 -u ingestion/unified_left_ingest.py --source nyt --daemon
+
+  bbc-worker:
+    build: .
+    container_name: worker-left-bbc
+    restart: unless-stopped
+    volumes:
+      - .:/app
+    working_dir: /app
+    command: python3 -u ingestion/unified_left_ingest.py --source bbc --daemon
+
+  # ─────────────────────────────────────────────
+  # 3. UNIFIED RIGHT WING MEDIA WORKERS
+  # ─────────────────────────────────────────────
+  dailywire-worker:
+    build: .
+    container_name: worker-right-dailywire
+    restart: unless-stopped
+    volumes:
+      - .:/app
+    working_dir: /app
+    command: python3 -u ingestion/unified_right_ingest.py --source daily_wire --daemon
+
+  examiner-worker:
+    build: .
+    container_name: worker-right-examiner
+    restart: unless-stopped
+    volumes:
+      - .:/app
+    working_dir: /app
+    command: python3 -u ingestion/unified_right_ingest.py --source washington_examiner --daemon
+
+  foxnews-worker:
+    build: .
+    container_name: worker-right-foxnews
+    restart: unless-stopped
+    volumes:
+      - .:/app
+    working_dir: /app
+    command: python3 -u ingestion/unified_right_ingest.py --source foxnews --daemon
+
+  nypost-worker:
+    build: .
+    container_name: worker-right-nypost
+    restart: unless-stopped
+    volumes:
+      - .:/app
+    working_dir: /app
+    command: python3 -u ingestion/unified_right_ingest.py --source nypost --daemon
+
+  conservative-worker:
+    build: .
+    container_name: worker-right-conservative
+    restart: unless-stopped
+    volumes:
+      - .:/app
+    working_dir: /app
+    command: python3 -u ingestion/unified_right_ingest.py --source american_conservative --daemon
+
+  breitbart-worker:
+    build: .
+    container_name: worker-right-breitbart
+    restart: unless-stopped
+    volumes:
+      - .:/app
+    working_dir: /app
+    command: python3 -u ingestion/unified_right_ingest.py --source breitbart --daemon
+
+  # ─────────────────────────────────────────────
+  # 4. GDELT INGESTORS
+  # ─────────────────────────────────────────────
   ingest-gdelt-events:
     build: .
     container_name: predictiq_ingest_gdelt_events
@@ -89,6 +199,9 @@ services:
     command: ["python3", "-u", "ingestion/gdelt_gkg_ingest.py"]
     working_dir: /app
 
+  # ─────────────────────────────────────────────
+  # 5. KALSHI MARKET INGESTOR
+  # ─────────────────────────────────────────────
   ingest-kalshi-active:
     build: .
     container_name: predictiq_ingest_kalshi_active
@@ -99,4 +212,3 @@ services:
       - .:/app
     command: ["python3", "-u", "ingestion/kalshi_markets_active.py"]
     working_dir: /app
-

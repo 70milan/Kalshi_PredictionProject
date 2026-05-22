@@ -58,6 +58,10 @@ export default function App() {
   const [showFreshBriefs, setShowFreshBriefs] = useState(true);
   const [showMidBriefs, setShowMidBriefs] = useState(false);
   const [showAgedBriefs, setShowAgedBriefs] = useState(false);
+  const [simSort, setSimSort] = useState({ col: null, dir: 'asc' });
+  const [simFilters, setSimFilters] = useState({});
+  const [oracleSort, setOracleSort] = useState({ col: null, dir: 'asc' });
+  const [oracleFilters, setOracleFilters] = useState({});
   const toastTimer = useRef(null);
 
   const showToast = useCallback((msg) => {
@@ -218,6 +222,13 @@ export default function App() {
     }, POLL_MS);
     return () => clearInterval(interval);
   }, [fetchIntelligence, fetchOrders, fetchExits, fetchPaperPositions]);
+
+  // Auto-refresh backtest while modal is open (every 2 min)
+  useEffect(() => {
+    if (!showBacktest) return;
+    const interval = setInterval(() => fetchPositionBacktest(), 120_000);
+    return () => clearInterval(interval);
+  }, [showBacktest, fetchPositionBacktest]);
 
   // Derived stats
   const withEdge = briefs.filter(b => b.kelly?.edge_detected);
@@ -621,7 +632,7 @@ export default function App() {
                             <span style={labelStyle}>TP %</span>
                             <input
                               type="number" step="1" min="1" max="500"
-                              placeholder={`${tpDefault}`}
+                              placeholder={tpDefault != null ? `${tpDefault}` : '65'}
                               value={tpInput}
                               onChange={e => setTpInput(e.target.value)}
                               onKeyDown={e => { if (e.key === 'Enter') apply(); }}
@@ -630,7 +641,7 @@ export default function App() {
                             <span style={labelStyle}>SL %</span>
                             <input
                               type="number" step="1" min="1" max="100"
-                              placeholder={`${slDefault}`}
+                              placeholder={slDefault != null ? `${slDefault}` : '10'}
                               value={slInput}
                               onChange={e => setSlInput(e.target.value)}
                               onKeyDown={e => { if (e.key === 'Enter') apply(); }}
@@ -661,7 +672,7 @@ export default function App() {
                               >Reset</button>
                             )}
                             <span style={{ fontSize: '0.58rem', color: 'var(--text-muted)', fontFamily: 'JetBrains Mono, monospace', marginLeft: 'auto' }}>
-                              now: +{tpDefault}% / -{slDefault}%
+                              now: +{tpDefault ?? '?'}% / -{slDefault ?? '?'}%
                             </span>
                           </div>
                         );
@@ -678,75 +689,198 @@ export default function App() {
                       return (
                         <>
                           {/* STAT STRIP */}
-                          <div style={{ display: 'flex', gap: '1.5rem', marginBottom: '1.25rem', flexWrap: 'wrap' }}>
-                            {[
-                              { label: 'Trades', value: s.total ?? 0, color: 'var(--text-primary)' },
-                              { label: 'Wins', value: s.wins ?? 0, color: 'var(--green)' },
-                              { label: 'Losses', value: s.losses ?? 0, color: 'var(--red)' },
-                              { label: 'Open', value: s.open ?? 0, color: 'var(--blue)' },
-                              { label: 'Win Rate', value: winRate != null ? `${winRate}%` : 'N/A', color: s.win_rate >= 0.55 ? 'var(--green)' : s.win_rate != null ? 'var(--red)' : 'var(--text-muted)' },
-                              { label: 'Total P&L', value: `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}`, color: totalPnl >= 0 ? 'var(--green)' : 'var(--red)' },
-                            ].map(({ label, value, color }) => (
-                              <div key={label} style={{ minWidth: '80px' }}>
-                                <div style={{ fontSize: '0.58rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '2px' }}>{label}</div>
-                                <div style={{ fontSize: '1.05rem', fontWeight: 700, color, fontFamily: 'JetBrains Mono, monospace' }}>{value}</div>
+                          {(() => {
+                            const totalInvested = trades.reduce((s, t) => s + (t.entry_price ?? 0) * (t.qty ?? 0), 0);
+                            const totalWon  = trades.reduce((s, t) => s + Math.max(0, t.pnl ?? 0), 0);
+                            const totalLost = trades.reduce((s, t) => s + Math.max(0, -(t.pnl ?? 0)), 0);
+                            const numWins   = s.wins ?? 0;
+                            const numLoss   = s.losses ?? 0;
+                            const pnlPct    = totalInvested > 0 ? (totalPnl / totalInvested) * 100 : 0;
+                            const wonPct    = totalInvested > 0 ? (totalWon / totalInvested) * 100 : 0;
+                            const lostPct   = totalInvested > 0 ? (totalLost / totalInvested) * 100 : 0;
+                            const avgWin    = numWins > 0 ? totalWon / numWins : 0;
+                            const avgLoss   = numLoss > 0 ? totalLost / numLoss : 0;
+                            const rr        = avgLoss > 0 ? (avgWin / avgLoss) : null;
+                            const pnlTip    = `Return: ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}% on $${totalInvested.toFixed(2)} invested\nAvg win:  +$${avgWin.toFixed(2)}\nAvg loss: -$${avgLoss.toFixed(2)}${rr ? `\nR/R:      ${rr.toFixed(2)}x` : ''}`;
+                            const winTip    = numWins > 0 ? `${numWins} wins (${wonPct.toFixed(2)}% of invested)\nAvg win: +$${avgWin.toFixed(2)}\nTotal:   +$${totalWon.toFixed(2)}` : 'No winning trades';
+                            const lossTip   = numLoss > 0 ? `${numLoss} losses (${lostPct.toFixed(2)}% of invested)\nAvg loss: -$${avgLoss.toFixed(2)}\nTotal:    -$${totalLost.toFixed(2)}` : 'No losing trades';
+                            return (
+                              <div style={{ display: 'flex', gap: '1.5rem', marginBottom: '1.25rem', flexWrap: 'wrap' }}>
+                                {[
+                                  { label: 'Trades',    value: s.total ?? 0,                                                         color: 'var(--text-primary)' },
+                                  { label: 'Wins',      value: numWins,                                                              color: 'var(--green)',  tip: winTip },
+                                  { label: 'Losses',    value: numLoss,                                                              color: 'var(--red)',    tip: lossTip },
+                                  { label: 'Open',      value: s.open ?? 0,                                                          color: 'var(--blue)' },
+                                  { label: 'Win Rate',  value: winRate != null ? `${winRate}%` : 'N/A',                              color: s.win_rate >= 0.55 ? 'var(--green)' : s.win_rate != null ? 'var(--red)' : 'var(--text-muted)' },
+                                  { label: 'Total P&L', value: `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}`,                color: totalPnl >= 0 ? 'var(--green)' : 'var(--red)',
+                                    sub: `${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%`, tip: pnlTip },
+                                  { label: 'Invested',  value: `$${totalInvested.toFixed(2)}`,                                      color: 'var(--text-secondary)' },
+                                  { label: 'Won',       value: `$${totalWon.toFixed(2)}`,                                           color: 'var(--green)',
+                                    sub: `${wonPct.toFixed(2)}%`, tip: winTip },
+                                  { label: 'Lost',      value: `$${totalLost.toFixed(2)}`,                                          color: 'var(--red)',
+                                    sub: `${lostPct.toFixed(2)}%`, tip: lossTip },
+                                ].map(({ label, value, color, sub, tip }) => (
+                                  <div
+                                    key={label}
+                                    title={tip || undefined}
+                                    style={{ minWidth: '70px', cursor: tip ? 'help' : 'default' }}
+                                  >
+                                    <div style={{ fontSize: '0.58rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '2px' }}>{label}</div>
+                                    <div style={{ fontSize: '1.05rem', fontWeight: 700, color, fontFamily: 'JetBrains Mono, monospace' }}>{value}</div>
+                                    {sub && (
+                                      <div style={{ fontSize: '0.65rem', color, opacity: 0.8, fontFamily: 'JetBrains Mono, monospace', marginTop: '1px' }}>{sub}</div>
+                                    )}
+                                  </div>
+                                ))}
                               </div>
-                            ))}
-                          </div>
+                            );
+                          })()}
 
                           {/* TABLE */}
-                          <div style={{ overflowX: 'auto' }}>
-                            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.68rem', fontFamily: 'JetBrains Mono, monospace' }}>
-                              <thead>
-                                <tr style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-muted)', fontSize: '0.58rem', textTransform: 'uppercase' }}>
-                                  <th style={{ textAlign: 'left', padding: '6px 8px', fontWeight: 500 }}>Entry</th>
-                                  <th style={{ textAlign: 'left', padding: '6px 8px', fontWeight: 500 }}>Market</th>
-                                  <th style={{ textAlign: 'center', padding: '6px 8px', fontWeight: 500 }}>Side</th>
-                                  <th style={{ textAlign: 'center', padding: '6px 8px', fontWeight: 500 }}>Buy</th>
-                                  <th style={{ textAlign: 'center', padding: '6px 8px', fontWeight: 500 }}>Qty</th>
-                                  <th style={{ textAlign: 'center', padding: '6px 8px', fontWeight: 500 }}>Outcome</th>
-                                  <th style={{ textAlign: 'center', padding: '6px 8px', fontWeight: 500 }}>Exit</th>
-                                  <th style={{ textAlign: 'center', padding: '6px 8px', fontWeight: 500 }}>Peak ROI</th>
-                                  <th style={{ textAlign: 'right', padding: '6px 8px', fontWeight: 500 }}>P&L</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {trades.map((t, i) => {
-                                  const meta = OUTCOME_META[t.outcome] ?? { label: t.outcome, color: 'var(--text-muted)' };
-                                  const pnlColor = t.pnl == null ? 'var(--text-muted)' : t.pnl >= 0 ? 'var(--green)' : 'var(--red)';
-                                  const entryC = Math.round((t.entry_price ?? 0) * 100);
-                                  const exitC = t.exit_price != null ? Math.round(t.exit_price * 100) : null;
-                                  return (
-                                    <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
-                                      <td style={{ padding: '5px 8px', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{t.entry_time ?? '—'}</td>
-                                      <td style={{ padding: '5px 8px', maxWidth: '260px' }}>
-                                        <div style={{ fontWeight: 600, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={t.title || t.ticker}>{t.ticker}</div>
-                                        {t.title && t.title !== t.ticker && <div style={{ fontSize: '0.58rem', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.title}</div>}
-                                      </td>
-                                      <td style={{ padding: '5px 8px', textAlign: 'center' }}>
-                                        <span style={{ color: t.side === 'yes' ? 'var(--green)' : 'var(--red)', fontWeight: 700 }}>{t.side?.toUpperCase()}</span>
-                                      </td>
-                                      <td style={{ padding: '5px 8px', textAlign: 'center', color: 'var(--text-secondary)' }}>{entryC}¢</td>
-                                      <td style={{ padding: '5px 8px', textAlign: 'center', color: 'var(--text-muted)' }}>{t.qty}</td>
-                                      <td style={{ padding: '5px 8px', textAlign: 'center' }}>
-                                        <span style={{ color: meta.color, fontWeight: 700, fontSize: '0.62rem' }}>{meta.label}</span>
-                                      </td>
-                                      <td style={{ padding: '5px 8px', textAlign: 'center', color: 'var(--text-secondary)' }}>
-                                        {exitC != null ? `${exitC}¢` : '—'}
-                                        {t.exit_time && <div style={{ fontSize: '0.55rem', color: 'var(--text-muted)' }}>{t.exit_time}</div>}
-                                      </td>
-                                      <td style={{ padding: '5px 8px', textAlign: 'center', color: t.peak_roi_pct >= 20 ? 'var(--green)' : 'var(--text-muted)' }}>
-                                        {t.peak_roi_pct != null ? `+${t.peak_roi_pct}%` : '—'}
-                                      </td>
-                                      <td style={{ padding: '5px 8px', textAlign: 'right', fontWeight: 700, color: pnlColor }}>
-                                        {t.pnl == null ? '—' : `${t.pnl >= 0 ? '+' : ''}$${t.pnl.toFixed(2)}`}
-                                      </td>
+                          {(() => {
+                            const simGetters = {
+                              entry_time:   t => t.brief_date ?? t.entry_time ?? '',
+                              ticker:       t => t.ticker ?? '',
+                              side:         t => t.side ?? '',
+                              entry_price:  t => t.entry_price ?? 0,
+                              qty:          t => t.qty ?? 0,
+                              invested:     t => (t.entry_price ?? 0) * (t.qty ?? 0),
+                              outcome:      t => t.outcome ?? '',
+                              exit_price:   t => t.exit_price ?? 0,
+                              peak_roi_pct: t => t.peak_roi_pct ?? 0,
+                              pnl:          t => t.pnl ?? 0,
+                              won:          t => (t.pnl ?? 0) > 0 ? t.pnl : 0,
+                              lost:         t => (t.pnl ?? 0) < 0 ? Math.abs(t.pnl) : 0,
+                            };
+                            let rows = trades;
+                            for (const [col, val] of Object.entries(simFilters)) {
+                              if (!val) continue;
+                              rows = rows.filter(r => {
+                                const v = simGetters[col]?.(r);
+                                return v != null && String(v).toLowerCase().includes(val.toLowerCase());
+                              });
+                            }
+                            if (simSort.col && simGetters[simSort.col]) {
+                              rows = [...rows].sort((a, b) => {
+                                const av = simGetters[simSort.col](a) ?? '';
+                                const bv = simGetters[simSort.col](b) ?? '';
+                                const cmp = typeof av === 'number' && typeof bv === 'number'
+                                  ? av - bv : String(av).localeCompare(String(bv));
+                                return simSort.dir === 'asc' ? cmp : -cmp;
+                              });
+                            }
+                            const si = col => simSort.col === col ? (simSort.dir === 'asc' ? ' ↑' : ' ↓') : ' ↕';
+                            const onS = col => setSimSort(p => ({ col, dir: p.col === col && p.dir === 'asc' ? 'desc' : 'asc' }));
+                            const thS = (align = 'left') => ({ textAlign: align, padding: '6px 8px', fontWeight: 500, cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' });
+                            const SIM_COLS = ['entry_time','ticker','side','entry_price','qty','invested','outcome','exit_price','peak_roi_pct','pnl','won','lost'];
+                            return (
+                              <div style={{ overflowX: 'auto' }}>
+                                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.68rem', fontFamily: 'JetBrains Mono, monospace' }}>
+                                  <thead>
+                                    <tr style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-muted)', fontSize: '0.58rem', textTransform: 'uppercase' }}>
+                                      <th onClick={() => onS('entry_time')}   style={thS('left')}>Entry{si('entry_time')}</th>
+                                      <th onClick={() => onS('ticker')}       style={thS('left')}>Market{si('ticker')}</th>
+                                      <th onClick={() => onS('side')}         style={thS('center')}>Side{si('side')}</th>
+                                      <th onClick={() => onS('entry_price')}  style={thS('center')}>Buy{si('entry_price')}</th>
+                                      <th onClick={() => onS('qty')}          style={thS('center')}>Qty{si('qty')}</th>
+                                      <th onClick={() => onS('invested')}     style={thS('center')}>Invested{si('invested')}</th>
+                                      <th onClick={() => onS('outcome')}      style={thS('center')}>Outcome{si('outcome')}</th>
+                                      <th onClick={() => onS('exit_price')}   style={thS('center')}>Exit{si('exit_price')}</th>
+                                      <th onClick={() => onS('peak_roi_pct')} style={thS('center')}>Peak ROI{si('peak_roi_pct')}</th>
+                                      <th onClick={() => onS('pnl')}          style={thS('right')}>P&amp;L{si('pnl')}</th>
+                                      <th onClick={() => onS('won')}          style={thS('right')}>Won{si('won')}</th>
+                                      <th onClick={() => onS('lost')}         style={thS('right')}>Lost{si('lost')}</th>
                                     </tr>
-                                  );
-                                })}
-                              </tbody>
-                            </table>
-                          </div>
+                                    <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                                      {SIM_COLS.map(col => (
+                                        <th key={col} style={{ padding: '2px 4px' }}>
+                                          <input
+                                            type="text"
+                                            value={simFilters[col] ?? ''}
+                                            onChange={e => setSimFilters(f => ({ ...f, [col]: e.target.value }))}
+                                            placeholder="…"
+                                            style={{ width: '100%', fontSize: '0.56rem', padding: '1px 3px', background: 'var(--bg-card)', color: 'var(--text-primary)', border: '1px solid var(--border)', borderRadius: '3px', fontFamily: 'inherit', boxSizing: 'border-box', minWidth: '28px' }}
+                                          />
+                                        </th>
+                                      ))}
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {rows.map((t, i) => {
+                                      const meta = OUTCOME_META[t.outcome] ?? { label: t.outcome, color: 'var(--text-muted)' };
+                                      const pnlColor = t.pnl == null ? 'var(--text-muted)' : t.pnl >= 0 ? 'var(--green)' : 'var(--red)';
+                                      const entryC = Math.round((t.entry_price ?? 0) * 100);
+                                      const exitC  = t.exit_price != null ? Math.round(t.exit_price * 100) : null;
+                                      const invested = (t.entry_price ?? 0) * (t.qty ?? 0);
+                                      return (
+                                        <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
+                                          <td style={{ padding: '5px 8px', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{t.brief_date ?? t.entry_time ?? '—'}</td>
+                                          <td style={{ padding: '5px 8px', maxWidth: '220px' }}>
+                                            <div style={{ fontWeight: 600, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={t.title || t.ticker}>{t.ticker}</div>
+                                            {t.title && t.title !== t.ticker && <div style={{ fontSize: '0.58rem', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.title}</div>}
+                                          </td>
+                                          <td style={{ padding: '5px 8px', textAlign: 'center' }}>
+                                            <span style={{ color: t.side === 'yes' ? 'var(--green)' : 'var(--red)', fontWeight: 700 }}>{t.side?.toUpperCase()}</span>
+                                          </td>
+                                          <td style={{ padding: '5px 8px', textAlign: 'center', color: 'var(--text-secondary)' }}>{entryC}¢</td>
+                                          <td style={{ padding: '5px 8px', textAlign: 'center', color: 'var(--text-muted)' }}>{t.qty}</td>
+                                          <td style={{ padding: '5px 8px', textAlign: 'center', color: 'var(--text-secondary)' }}>${invested.toFixed(2)}</td>
+                                          <td style={{ padding: '5px 8px', textAlign: 'center' }}>
+                                            <span style={{ color: meta.color, fontWeight: 700, fontSize: '0.62rem' }}>{meta.label}</span>
+                                          </td>
+                                          <td style={{ padding: '5px 8px', textAlign: 'center', color: 'var(--text-secondary)' }}>
+                                            {exitC != null ? `${exitC}¢` : '—'}
+                                            {t.exit_time && <div style={{ fontSize: '0.55rem', color: 'var(--text-muted)' }}>{t.exit_time}</div>}
+                                          </td>
+                                          <td style={{ padding: '5px 8px', textAlign: 'center', color: t.peak_roi_pct >= 20 ? 'var(--green)' : 'var(--text-muted)' }}>
+                                            {t.peak_roi_pct != null ? `+${t.peak_roi_pct}%` : '—'}
+                                          </td>
+                                          {(() => {
+                                            const rowPnlPct = invested > 0 && t.pnl != null ? (t.pnl / invested) * 100 : null;
+                                            const pnlTip = t.pnl != null
+                                              ? `P&L: ${t.pnl >= 0 ? '+' : ''}$${t.pnl.toFixed(2)} on $${invested.toFixed(2)} invested${rowPnlPct != null ? `\nReturn: ${rowPnlPct >= 0 ? '+' : ''}${rowPnlPct.toFixed(2)}%` : ''}`
+                                              : undefined;
+                                            return (
+                                              <>
+                                                <td title={pnlTip} style={{ padding: '5px 8px', textAlign: 'right', fontWeight: 700, color: pnlColor, cursor: pnlTip ? 'help' : 'default' }}>
+                                                  <div>{t.pnl == null ? '—' : `${t.pnl >= 0 ? '+' : ''}$${t.pnl.toFixed(2)}`}</div>
+                                                  {rowPnlPct != null && (
+                                                    <div style={{ fontSize: '0.58rem', fontWeight: 500, opacity: 0.8 }}>
+                                                      {rowPnlPct >= 0 ? '+' : ''}{rowPnlPct.toFixed(2)}%
+                                                    </div>
+                                                  )}
+                                                </td>
+                                                <td title={pnlTip} style={{ padding: '5px 8px', textAlign: 'right', fontWeight: 600, color: 'var(--green)', cursor: (t.pnl ?? 0) > 0 ? 'help' : 'default' }}>
+                                                  {(t.pnl ?? 0) > 0 ? (
+                                                    <>
+                                                      <div>+${t.pnl.toFixed(2)}</div>
+                                                      {rowPnlPct != null && (
+                                                        <div style={{ fontSize: '0.58rem', fontWeight: 500, opacity: 0.8 }}>+{rowPnlPct.toFixed(2)}%</div>
+                                                      )}
+                                                    </>
+                                                  ) : '—'}
+                                                </td>
+                                                <td title={pnlTip} style={{ padding: '5px 8px', textAlign: 'right', fontWeight: 600, color: 'var(--red)', cursor: (t.pnl ?? 0) < 0 ? 'help' : 'default' }}>
+                                                  {(t.pnl ?? 0) < 0 ? (
+                                                    <>
+                                                      <div>${Math.abs(t.pnl).toFixed(2)}</div>
+                                                      {rowPnlPct != null && (
+                                                        <div style={{ fontSize: '0.58rem', fontWeight: 500, opacity: 0.8 }}>{rowPnlPct.toFixed(2)}%</div>
+                                                      )}
+                                                    </>
+                                                  ) : '—'}
+                                                </td>
+                                              </>
+                                            );
+                                          })()}
+                                        </tr>
+                                      );
+                                    })}
+                                  </tbody>
+                                </table>
+                              </div>
+                            );
+                          })()}
                           <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', marginTop: '0.75rem' }}>
                             Simulates current exit rules against historical price snapshots from entry date. P&L based on actual qty held. Not financial advice.
                           </div>
@@ -821,73 +955,195 @@ export default function App() {
                       <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', padding: '1rem 0' }}>Scanning 250+ settled markets…</div>
                     ) : oracleBacktestData ? (
                       <>
-                        <div style={{ display: 'flex', gap: '1.5rem', marginBottom: '1.25rem', flexWrap: 'wrap' }}>
-                          {[
-                            { label: 'Trades',     value: s.total ?? 0,                             color: 'var(--text-primary)' },
-                            { label: 'Wins',       value: s.wins ?? 0,                              color: 'var(--green)' },
-                            { label: 'Stop Exits', value: s.stop_exits ?? 0,                        color: 'var(--red)' },
-                            { label: 'Win Rate',   value: s.win_rate != null ? `${(s.win_rate*100).toFixed(0)}%` : 'N/A', color: (s.win_rate ?? 0) >= 0.55 ? 'var(--green)' : 'var(--red)' },
-                            { label: 'Avg Win',    value: s.avg_win != null ? `${s.avg_win >= 0 ? '+' : ''}$${s.avg_win?.toFixed(2)}` : 'N/A', color: 'var(--green)' },
-                            { label: 'Avg Loss',   value: s.avg_loss != null ? `$${s.avg_loss?.toFixed(2)}` : 'N/A', color: 'var(--red)' },
-                            { label: 'R/R',        value: s.rr != null ? `${s.rr}×` : 'N/A',       color: 'var(--text-secondary)' },
-                            { label: 'Total P&L',  value: s.total_pnl != null ? `${s.total_pnl >= 0 ? '+' : ''}$${s.total_pnl?.toFixed(2)}` : 'N/A', color: (s.total_pnl ?? 0) >= 0 ? 'var(--green)' : 'var(--red)' },
-                          ].map(({ label, value, color }) => (
-                            <div key={label} style={{ minWidth: '70px' }}>
-                              <div style={{ fontSize: '0.55rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '2px' }}>{label}</div>
-                              <div style={{ fontSize: '0.95rem', fontWeight: 700, color, fontFamily: 'JetBrains Mono, monospace' }}>{value}</div>
+                        {(() => {
+                          const totalInvested = trades.reduce((acc, t) => acc + (t.entry_price ?? 0) * (t.qty ?? 0), 0);
+                          const totalWon  = trades.reduce((acc, t) => acc + Math.max(0, t.pnl ?? 0), 0);
+                          const totalLost = trades.reduce((acc, t) => acc + Math.max(0, -(t.pnl ?? 0)), 0);
+                          const totPnl    = s.total_pnl ?? 0;
+                          const numWins   = s.wins ?? 0;
+                          const numStops  = s.stop_exits ?? 0;
+                          const pnlPct    = totalInvested > 0 ? (totPnl / totalInvested) * 100 : 0;
+                          const wonPct    = totalInvested > 0 ? (totalWon / totalInvested) * 100 : 0;
+                          const lostPct   = totalInvested > 0 ? (totalLost / totalInvested) * 100 : 0;
+                          const avgWin    = s.avg_win ?? 0;
+                          const avgLoss   = s.avg_loss ?? 0;
+                          const pnlTip    = `Return: ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}% on $${totalInvested.toFixed(2)} invested\nAvg win:  +$${avgWin.toFixed(2)}\nAvg loss: -$${avgLoss.toFixed(2)}${s.rr ? `\nR/R:      ${s.rr}x` : ''}`;
+                          const winTip    = numWins > 0 ? `${numWins} wins (${wonPct.toFixed(2)}% of invested)\nAvg win: +$${avgWin.toFixed(2)}\nTotal:   +$${totalWon.toFixed(2)}` : 'No winning trades';
+                          const lossTip   = numStops > 0 ? `${numStops} losses (${lostPct.toFixed(2)}% of invested)\nAvg loss: -$${avgLoss.toFixed(2)}\nTotal:    -$${totalLost.toFixed(2)}` : 'No losing trades';
+                          return (
+                            <div style={{ display: 'flex', gap: '1.5rem', marginBottom: '1.25rem', flexWrap: 'wrap' }}>
+                              {[
+                                { label: 'Trades',     value: s.total ?? 0,                                                                    color: 'var(--text-primary)' },
+                                { label: 'Wins',       value: numWins,                                                                         color: 'var(--green)', tip: winTip },
+                                { label: 'Stop Exits', value: numStops,                                                                        color: 'var(--red)',   tip: lossTip },
+                                { label: 'Win Rate',   value: s.win_rate != null ? `${(s.win_rate*100).toFixed(0)}%` : 'N/A',                  color: (s.win_rate ?? 0) >= 0.55 ? 'var(--green)' : 'var(--red)' },
+                                { label: 'Avg Win',    value: s.avg_win != null ? `${s.avg_win >= 0 ? '+' : ''}$${s.avg_win?.toFixed(2)}` : 'N/A', color: 'var(--green)' },
+                                { label: 'Avg Loss',   value: s.avg_loss != null ? `$${s.avg_loss?.toFixed(2)}` : 'N/A',                       color: 'var(--red)' },
+                                { label: 'R/R',        value: s.rr != null ? `${s.rr}×` : 'N/A',                                              color: 'var(--text-secondary)' },
+                                { label: 'Total P&L',  value: s.total_pnl != null ? `${s.total_pnl >= 0 ? '+' : ''}$${s.total_pnl?.toFixed(2)}` : 'N/A', color: (s.total_pnl ?? 0) >= 0 ? 'var(--green)' : 'var(--red)',
+                                  sub: `${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%`, tip: pnlTip },
+                                { label: 'Invested',   value: `$${totalInvested.toFixed(2)}`,                                                  color: 'var(--text-secondary)' },
+                                { label: 'Won',        value: `$${totalWon.toFixed(2)}`,                                                       color: 'var(--green)',
+                                  sub: `${wonPct.toFixed(2)}%`, tip: winTip },
+                                { label: 'Lost',       value: `$${totalLost.toFixed(2)}`,                                                      color: 'var(--red)',
+                                  sub: `${lostPct.toFixed(2)}%`, tip: lossTip },
+                              ].map(({ label, value, color, sub, tip }) => (
+                                <div
+                                  key={label}
+                                  title={tip || undefined}
+                                  style={{ minWidth: '60px', cursor: tip ? 'help' : 'default' }}
+                                >
+                                  <div style={{ fontSize: '0.55rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '2px' }}>{label}</div>
+                                  <div style={{ fontSize: '0.95rem', fontWeight: 700, color, fontFamily: 'JetBrains Mono, monospace' }}>{value}</div>
+                                  {sub && (
+                                    <div style={{ fontSize: '0.6rem', color, opacity: 0.8, fontFamily: 'JetBrains Mono, monospace', marginTop: '1px' }}>{sub}</div>
+                                  )}
+                                </div>
+                              ))}
                             </div>
-                          ))}
-                        </div>
-                        <div style={{ overflowX: 'auto' }}>
-                          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.68rem', fontFamily: 'JetBrains Mono, monospace' }}>
-                            <thead>
-                              <tr style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-muted)', fontSize: '0.58rem', textTransform: 'uppercase' }}>
-                                <th style={{ textAlign: 'left',   padding: '6px 8px', fontWeight: 500 }}>Entry</th>
-                                <th style={{ textAlign: 'left',   padding: '6px 8px', fontWeight: 500 }}>Market</th>
-                                <th style={{ textAlign: 'center', padding: '6px 8px', fontWeight: 500 }}>Side</th>
-                                <th style={{ textAlign: 'center', padding: '6px 8px', fontWeight: 500 }}>Buy</th>
-                                <th style={{ textAlign: 'center', padding: '6px 8px', fontWeight: 500 }}>Outcome</th>
-                                <th style={{ textAlign: 'center', padding: '6px 8px', fontWeight: 500 }}>Exit</th>
-                                <th style={{ textAlign: 'center', padding: '6px 8px', fontWeight: 500 }}>Peak ROI</th>
-                                <th style={{ textAlign: 'right',  padding: '6px 8px', fontWeight: 500 }}>P&L</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {trades.map((t, i) => {
-                                const meta = OUTCOME_META[t.outcome] ?? { label: t.outcome, color: 'var(--text-muted)' };
-                                const pnlColor = t.pnl >= 0 ? 'var(--green)' : 'var(--red)';
-                                const entryC = Math.round((t.entry_price ?? 0) * 100);
-                                const exitC  = t.exit_price != null ? Math.round(t.exit_price * 100) : null;
-                                return (
-                                  <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
-                                    <td style={{ padding: '5px 8px', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{t.entry_date ?? '—'}</td>
-                                    <td style={{ padding: '5px 8px', maxWidth: '260px' }}>
-                                      <div style={{ fontWeight: 600, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={t.title || t.ticker}>{t.ticker}</div>
-                                      {t.title && t.title !== t.ticker && <div style={{ fontSize: '0.58rem', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.title}</div>}
-                                    </td>
-                                    <td style={{ padding: '5px 8px', textAlign: 'center' }}>
-                                      <span style={{ color: t.side === 'yes' ? 'var(--green)' : 'var(--red)', fontWeight: 700 }}>{t.side?.toUpperCase()}</span>
-                                    </td>
-                                    <td style={{ padding: '5px 8px', textAlign: 'center', color: 'var(--text-secondary)' }}>{entryC}¢</td>
-                                    <td style={{ padding: '5px 8px', textAlign: 'center' }}>
-                                      <span style={{ color: meta.color, fontWeight: 700, fontSize: '0.62rem' }}>{meta.label}</span>
-                                    </td>
-                                    <td style={{ padding: '5px 8px', textAlign: 'center', color: 'var(--text-secondary)' }}>
-                                      {exitC != null ? `${exitC}¢` : '—'}
-                                      {t.exit_date && <div style={{ fontSize: '0.55rem', color: 'var(--text-muted)' }}>{t.exit_date}</div>}
-                                    </td>
-                                    <td style={{ padding: '5px 8px', textAlign: 'center', color: t.peak_roi_pct >= 20 ? 'var(--green)' : 'var(--text-muted)' }}>
-                                      {t.peak_roi_pct != null ? `+${t.peak_roi_pct}%` : '—'}
-                                    </td>
-                                    <td style={{ padding: '5px 8px', textAlign: 'right', fontWeight: 700, color: pnlColor }}>
-                                      {`${t.pnl >= 0 ? '+' : ''}$${t.pnl.toFixed(2)}`}
-                                    </td>
+                          );
+                        })()}
+                        {(() => {
+                          const oracleGetters = {
+                            entry_date:   t => t.entry_date ?? '',
+                            ticker:       t => t.ticker ?? '',
+                            side:         t => t.side ?? '',
+                            entry_price:  t => t.entry_price ?? 0,
+                            invested:     t => (t.entry_price ?? 0) * (t.qty ?? 0),
+                            outcome:      t => t.outcome ?? '',
+                            exit_price:   t => t.exit_price ?? 0,
+                            peak_roi_pct: t => t.peak_roi_pct ?? 0,
+                            pnl:          t => t.pnl ?? 0,
+                            won:          t => (t.pnl ?? 0) > 0 ? t.pnl : 0,
+                            lost:         t => (t.pnl ?? 0) < 0 ? Math.abs(t.pnl) : 0,
+                          };
+                          let rows = trades;
+                          for (const [col, val] of Object.entries(oracleFilters)) {
+                            if (!val) continue;
+                            rows = rows.filter(r => {
+                              const v = oracleGetters[col]?.(r);
+                              return v != null && String(v).toLowerCase().includes(val.toLowerCase());
+                            });
+                          }
+                          if (oracleSort.col && oracleGetters[oracleSort.col]) {
+                            rows = [...rows].sort((a, b) => {
+                              const av = oracleGetters[oracleSort.col](a) ?? '';
+                              const bv = oracleGetters[oracleSort.col](b) ?? '';
+                              const cmp = typeof av === 'number' && typeof bv === 'number'
+                                ? av - bv : String(av).localeCompare(String(bv));
+                              return oracleSort.dir === 'asc' ? cmp : -cmp;
+                            });
+                          }
+                          const oi = col => oracleSort.col === col ? (oracleSort.dir === 'asc' ? ' ↑' : ' ↓') : ' ↕';
+                          const onO = col => setOracleSort(p => ({ col, dir: p.col === col && p.dir === 'asc' ? 'desc' : 'asc' }));
+                          const thO = (align = 'left') => ({ textAlign: align, padding: '6px 8px', fontWeight: 500, cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' });
+                          const ORA_COLS = ['entry_date','ticker','side','entry_price','invested','outcome','exit_price','peak_roi_pct','pnl','won','lost'];
+                          return (
+                            <div style={{ overflowX: 'auto' }}>
+                              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.68rem', fontFamily: 'JetBrains Mono, monospace' }}>
+                                <thead>
+                                  <tr style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-muted)', fontSize: '0.58rem', textTransform: 'uppercase' }}>
+                                    <th onClick={() => onO('entry_date')}   style={thO('left')}>Entry{oi('entry_date')}</th>
+                                    <th onClick={() => onO('ticker')}       style={thO('left')}>Market{oi('ticker')}</th>
+                                    <th onClick={() => onO('side')}         style={thO('center')}>Side{oi('side')}</th>
+                                    <th onClick={() => onO('entry_price')}  style={thO('center')}>Buy{oi('entry_price')}</th>
+                                    <th onClick={() => onO('invested')}     style={thO('center')}>Invested{oi('invested')}</th>
+                                    <th onClick={() => onO('outcome')}      style={thO('center')}>Outcome{oi('outcome')}</th>
+                                    <th onClick={() => onO('exit_price')}   style={thO('center')}>Exit{oi('exit_price')}</th>
+                                    <th onClick={() => onO('peak_roi_pct')} style={thO('center')}>Peak ROI{oi('peak_roi_pct')}</th>
+                                    <th onClick={() => onO('pnl')}          style={thO('right')}>P&amp;L{oi('pnl')}</th>
+                                    <th onClick={() => onO('won')}          style={thO('right')}>Won{oi('won')}</th>
+                                    <th onClick={() => onO('lost')}         style={thO('right')}>Lost{oi('lost')}</th>
                                   </tr>
-                                );
-                              })}
-                            </tbody>
-                          </table>
-                        </div>
+                                  <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                                    {ORA_COLS.map(col => (
+                                      <th key={col} style={{ padding: '2px 4px' }}>
+                                        <input
+                                          type="text"
+                                          value={oracleFilters[col] ?? ''}
+                                          onChange={e => setOracleFilters(f => ({ ...f, [col]: e.target.value }))}
+                                          placeholder="…"
+                                          style={{ width: '100%', fontSize: '0.56rem', padding: '1px 3px', background: 'var(--bg-card)', color: 'var(--text-primary)', border: '1px solid var(--border)', borderRadius: '3px', fontFamily: 'inherit', boxSizing: 'border-box', minWidth: '28px' }}
+                                        />
+                                      </th>
+                                    ))}
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {rows.map((t, i) => {
+                                    const meta = OUTCOME_META[t.outcome] ?? { label: t.outcome, color: 'var(--text-muted)' };
+                                    const pnlColor = t.pnl >= 0 ? 'var(--green)' : 'var(--red)';
+                                    const entryC = Math.round((t.entry_price ?? 0) * 100);
+                                    const exitC  = t.exit_price != null ? Math.round(t.exit_price * 100) : null;
+                                    const invested = (t.entry_price ?? 0) * (t.qty ?? 0);
+                                    return (
+                                      <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
+                                        <td style={{ padding: '5px 8px', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{t.entry_date ?? '—'}</td>
+                                        <td style={{ padding: '5px 8px', maxWidth: '220px' }}>
+                                          <div style={{ fontWeight: 600, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={t.title || t.ticker}>{t.ticker}</div>
+                                          {t.title && t.title !== t.ticker && <div style={{ fontSize: '0.58rem', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.title}</div>}
+                                        </td>
+                                        <td style={{ padding: '5px 8px', textAlign: 'center' }}>
+                                          <span style={{ color: t.side === 'yes' ? 'var(--green)' : 'var(--red)', fontWeight: 700 }}>{t.side?.toUpperCase()}</span>
+                                        </td>
+                                        <td style={{ padding: '5px 8px', textAlign: 'center', color: 'var(--text-secondary)' }}>{entryC}¢</td>
+                                        <td style={{ padding: '5px 8px', textAlign: 'center', color: 'var(--text-secondary)' }}>${invested.toFixed(2)}</td>
+                                        <td style={{ padding: '5px 8px', textAlign: 'center' }}>
+                                          <span style={{ color: meta.color, fontWeight: 700, fontSize: '0.62rem' }}>{meta.label}</span>
+                                        </td>
+                                        <td style={{ padding: '5px 8px', textAlign: 'center', color: 'var(--text-secondary)' }}>
+                                          {exitC != null ? `${exitC}¢` : '—'}
+                                          {t.exit_date && <div style={{ fontSize: '0.55rem', color: 'var(--text-muted)' }}>{t.exit_date}</div>}
+                                        </td>
+                                        <td style={{ padding: '5px 8px', textAlign: 'center', color: t.peak_roi_pct >= 20 ? 'var(--green)' : 'var(--text-muted)' }}>
+                                          {t.peak_roi_pct != null ? `+${t.peak_roi_pct}%` : '—'}
+                                        </td>
+                                        {(() => {
+                                          const rowPnlPct = invested > 0 && t.pnl != null ? (t.pnl / invested) * 100 : null;
+                                          const pnlTip = t.pnl != null
+                                            ? `P&L: ${t.pnl >= 0 ? '+' : ''}$${t.pnl.toFixed(2)} on $${invested.toFixed(2)} invested${rowPnlPct != null ? `\nReturn: ${rowPnlPct >= 0 ? '+' : ''}${rowPnlPct.toFixed(2)}%` : ''}`
+                                            : undefined;
+                                          return (
+                                            <>
+                                              <td title={pnlTip} style={{ padding: '5px 8px', textAlign: 'right', fontWeight: 700, color: pnlColor, cursor: pnlTip ? 'help' : 'default' }}>
+                                                <div>{`${t.pnl >= 0 ? '+' : ''}$${t.pnl.toFixed(2)}`}</div>
+                                                {rowPnlPct != null && (
+                                                  <div style={{ fontSize: '0.58rem', fontWeight: 500, opacity: 0.8 }}>
+                                                    {rowPnlPct >= 0 ? '+' : ''}{rowPnlPct.toFixed(2)}%
+                                                  </div>
+                                                )}
+                                              </td>
+                                              <td title={pnlTip} style={{ padding: '5px 8px', textAlign: 'right', fontWeight: 600, color: 'var(--green)', cursor: (t.pnl ?? 0) > 0 ? 'help' : 'default' }}>
+                                                {(t.pnl ?? 0) > 0 ? (
+                                                  <>
+                                                    <div>+${t.pnl.toFixed(2)}</div>
+                                                    {rowPnlPct != null && (
+                                                      <div style={{ fontSize: '0.58rem', fontWeight: 500, opacity: 0.8 }}>+{rowPnlPct.toFixed(2)}%</div>
+                                                    )}
+                                                  </>
+                                                ) : '—'}
+                                              </td>
+                                              <td title={pnlTip} style={{ padding: '5px 8px', textAlign: 'right', fontWeight: 600, color: 'var(--red)', cursor: (t.pnl ?? 0) < 0 ? 'help' : 'default' }}>
+                                                {(t.pnl ?? 0) < 0 ? (
+                                                  <>
+                                                    <div>${Math.abs(t.pnl).toFixed(2)}</div>
+                                                    {rowPnlPct != null && (
+                                                      <div style={{ fontSize: '0.58rem', fontWeight: 500, opacity: 0.8 }}>{rowPnlPct.toFixed(2)}%</div>
+                                                    )}
+                                                  </>
+                                                ) : '—'}
+                                              </td>
+                                            </>
+                                          );
+                                        })()}
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
+                          );
+                        })()}
                         <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', marginTop: '0.75rem' }}>
                           Oracle upper bound — assumes perfect direction prediction on every settled market in our bronze snapshots.
                           Real model performance will be lower. Tests whether TP/SL rules add value vs. holding to settlement.

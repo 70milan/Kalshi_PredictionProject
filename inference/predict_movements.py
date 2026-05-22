@@ -22,7 +22,7 @@ import time
 # ---------------------------------------------------------
 # 1. SETUP & CONFIGURATION
 # ---------------------------------------------------------
-load_dotenv()
+load_dotenv(override=True)  # .env values WIN over pre-existing OS env vars
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 sys.path.insert(0, os.path.join(PROJECT_ROOT, "api"))
@@ -43,7 +43,7 @@ openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 OPENAI_MODEL  = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 # Per-cycle scan limits.
-CANDIDATE_LIMIT      = int(os.getenv("CANDIDATE_LIMIT", "20"))
+CANDIDATE_LIMIT      = int(os.getenv("CANDIDATE_LIMIT", "50"))
 
 # Cooldown: skip a ticker if it was analyzed within COOLDOWN_HOURS AND its
 # mispricing_score has moved less than COOLDOWN_SCORE_DELTA points since.
@@ -75,20 +75,58 @@ def _get_query_embedding(collection_name: str, text: str):
 # ---------------------------------------------------------
 # 2. CANDIDATE SELECTION
 # ---------------------------------------------------------
+SERIES_LIMIT = int(os.getenv("SERIES_LIMIT", "2"))  # max candidates per ticker series
+
+
+SERIES_LIMIT = int(os.getenv("SERIES_LIMIT", "2"))  # max candidates per ticker series
+
+
 def get_predictive_candidates(con, min_score=80.0):
-    print(f"[Predictive] Scanning Gold Mispricing Ledger for scores >= {min_score} (limit={CANDIDATE_LIMIT})...")
-    # Tiebreaker on abs(delta_15m) matters: 17+ markets typically tie at score 100,
-    # so ordering by score alone picks ~randomly. Markets that moved most recently
-    # are the most interesting among saturated scores.
+    print(f"[Predictive] Scanning Gold Mispricing Ledger for scores >= {min_score} "
+          f"(limit={CANDIDATE_LIMIT}, max {SERIES_LIMIT} per series)...")
+
+    # Pre-filter cooled-down tickers in SQL so they never occupy a candidate slot.
+    # Score-delta exception (re-analyze if score moved) stays in the Python loop.
+    history_filter = "1=1"  # fallback: no filter if history file missing
+    if os.path.exists(INFERENCE_HISTORY_PATH):
+        try:
+            hist_path = INFERENCE_HISTORY_PATH.replace("\\", "/")
+            history_filter = f"""
+                ticker NOT IN (
+                    SELECT DISTINCT ticker
+                    FROM read_parquet('{hist_path}')
+                    WHERE TRY_CAST(analyzed_at AS TIMESTAMPTZ)
+                          >= CURRENT_TIMESTAMP - INTERVAL '{COOLDOWN_HOURS} hours'
+                )
+            """
+        except Exception:
+            pass  # unreadable history — fall back to no pre-filter
+
     query = f"""
-    SELECT ticker, title, yes_bid as current_odds, delta_15m, mispricing_score,
+    WITH latest AS (
+        SELECT ticker, title, yes_bid AS current_odds, delta_15m, mispricing_score,
+               max_spike_multiplier, sentiment_signal, ingested_at,
+               SPLIT_PART(ticker, '-', 1) AS series
+        FROM delta_scan('{GOLD_MISPRICING}')
+        WHERE flagged_candidate = true
+          AND mispricing_score >= {min_score}
+          AND TRY_CAST(ingested_at AS TIMESTAMPTZ) >= CURRENT_TIMESTAMP - INTERVAL '48 hours'
+          AND yes_bid BETWEEN 0.25 AND 0.75
+          AND {history_filter}
+        QUALIFY ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY ingested_at DESC) = 1
+    ),
+    ranked AS (
+        SELECT *,
+               ROW_NUMBER() OVER (
+                   PARTITION BY series
+                   ORDER BY mispricing_score DESC, ABS(COALESCE(delta_15m, 0)) DESC
+               ) AS series_rank
+        FROM latest
+    )
+    SELECT ticker, title, current_odds, delta_15m, mispricing_score,
            max_spike_multiplier, sentiment_signal, ingested_at
-    FROM delta_scan('{GOLD_MISPRICING}')
-    WHERE flagged_candidate = true
-      AND mispricing_score >= {min_score}
-      AND TRY_CAST(ingested_at AS TIMESTAMPTZ) >= CURRENT_TIMESTAMP - INTERVAL '48 hours'
-      AND yes_bid BETWEEN 0.25 AND 0.75
-    QUALIFY ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY ingested_at DESC) = 1
+    FROM ranked
+    WHERE series_rank <= {SERIES_LIMIT}
     ORDER BY mispricing_score DESC, ABS(COALESCE(delta_15m, 0)) DESC
     LIMIT {CANDIDATE_LIMIT};
     """
@@ -290,8 +328,8 @@ TASK:
 
 RULES:
 - Do NOT repeat volume numbers. Explain the news fundamentals.
-- STRICT RULE: Never recommend 'Buy YES' on a speculative basis just because the odds are low. If there is NO CONCRETE EVIDENCE in the text supporting the outcome, you MUST recommend 'Buy NO' or 'No Trade'. Do not act as a pundit.
-- Be highly critical. If news is vague, recommend 'No Trade'.
+- Be highly critical. If news is vague or absent for EITHER side, recommend 'No Trade'.
+- Treat YES and NO symmetrically: lack of evidence is NOT a reason to prefer NO. Only recommend a side if concrete evidence shifts the probability materially from current odds.
 - Respond ONLY with a JSON object: bull_case, bear_case, verdict, recommended_side, confidence_pct, decision_reason.
 - recommended_side must be exactly "yes" or "no" (lowercase).
 - confidence_pct must be an integer 0-100.
@@ -377,18 +415,25 @@ def main():
 
         print(f"\n[Predictive] ANALYZING: {ticker} (Score: {score:.1f})")
 
-        odds_pct = round(float(market['current_odds']) * 100, 1)
-        enriched_query = (
-            f"Prediction market question: {market['title']} "
-            f"Current market probability: {odds_pct}%. "
-            f"Find evidence about whether this event will happen."
-        )
-        context_docs = fetch_rag_context(active_collections, enriched_query, market_time)
+        # Build a query that leads with the title so ChromaDB can match proper nouns,
+        # then appends the ticker (contains entity codes) as a secondary signal.
+        rag_query = f"{market['title']} {ticker}"
+        context_docs = fetch_rag_context(active_collections, rag_query, market_time)
         if not context_docs:
-            print(f"    > No RAG matches found. Skipping.")
+            print(f"    > No RAG matches found. Adding to cooldown to prevent repeated burns.")
+            history_df, _ = _append_inference(history_df, ticker, score, 0, 0)
             continue
 
-        print(f"    > Synthesizing {len(context_docs)} signals...")
+        # RAG quality gate: if the best-matching doc isn't actually relevant,
+        # the LLM will return 50% confidence anyway — skip the API call entirely.
+        MIN_RAG_SCORE = 0.63
+        best_rag = max(d['score'] for d in context_docs)
+        if best_rag < MIN_RAG_SCORE:
+            print(f"    > RAG quality too low ({best_rag:.2f} < {MIN_RAG_SCORE}) — no signal, adding to cooldown.")
+            history_df, _ = _append_inference(history_df, ticker, score, 0, 0)
+            continue
+
+        print(f"    > Synthesizing {len(context_docs)} signals (best RAG: {best_rag:.2f})...")
         brief, in_tok, out_tok = generate_predictive_brief(market, context_docs)
 
         if brief is None:
@@ -408,9 +453,13 @@ def main():
         # Calibration guard: LLM must beat the market by at least MIN_EDGE percentage points,
         # not just any positive margin. A 51% LLM vs a 50% market is noise; +10pp is the
         # threshold where edge survives LLM miscalibration.
-        MIN_EDGE = 0.10
+        MIN_EDGE       = 0.10
+        MIN_CONFIDENCE = 0.65   # 50% LLM = shrug; only act on real conviction
         market_prob = current_odds if recommended == "yes" else (1.0 - current_odds)
         entry_price = market_prob
+        if confidence < MIN_CONFIDENCE:
+            print(f"    > Confidence too low: {confidence:.0%} < {MIN_CONFIDENCE:.0%} floor — skipping")
+            continue
         if confidence < market_prob + MIN_EDGE:
             print(f"    > Edge too thin: LLM {confidence:.0%} vs market {market_prob:.0%} (need +{MIN_EDGE:.0%}) — skipping")
             continue
@@ -418,7 +467,7 @@ def main():
         # Kelly viability gate: skip if the payout ratio is too poor for positive Kelly.
         # This filters "trapped" bets where TP at {TAKE_PROFIT_ROI:.0%} ROI is physically
         # unreachable (entry_price * (1+TP) > $1.00) or reward/risk is unfavorable.
-        kelly_check = calculate_kelly(confidence, entry_price, PAPER_BANKROLL, resolved_count=50)
+        kelly_check = calculate_kelly(confidence, entry_price, PAPER_BANKROLL)
         if not kelly_check["edge_detected"]:
             print(f"    > Kelly negative: entry_price {entry_price:.2f} on {recommended} side — payout ratio too poor, skipping")
             continue
@@ -439,6 +488,7 @@ def main():
             "mispricing_score": float(market['mispricing_score']),
             "confidence_score": float(confidence),
             "rag_score":        round(rag_score, 4),
+            "replay_model":     OPENAI_MODEL,
             "event_at":         current_time.isoformat(),
             "ingested_at":      current_time.isoformat(),
         }
@@ -449,8 +499,13 @@ def main():
         out_path = os.path.join(GOLD_BRIEFS, f"brief_{ts_str}_{ticker}.parquet")
         pd.DataFrame([row]).to_parquet(out_path, index=False)
 
-        # Auto paper-trade: log to simulated_trades.csv immediately — no manual approval needed.
-        kelly_sized = calculate_kelly(confidence, entry_price, PAPER_BANKROLL, resolved_count=50)
+        # Auto paper-trade: only on actionable verdicts (skip "No Trade").
+        verdict_str = str(row.get("verdict", "")).strip()
+        if verdict_str.lower().startswith("no trade"):
+            written += 1
+            continue  # brief is already written to parquet; no position, no Telegram
+
+        kelly_sized = calculate_kelly(confidence, entry_price, PAPER_BANKROLL)
         qty = int(kelly_sized["suggested_bet_usd"] / entry_price) if entry_price > 0 else 0
         if qty > 0:
             file_exists = os.path.isfile(SIMULATED_TRADES_PATH)

@@ -1,0 +1,8 @@
+# Frontend-specific ignores (root .claudeignore covers most of this too)
+node_modules/
+dist/
+build/
+.vite/
+coverage/
+package-lock.json
+*.log
