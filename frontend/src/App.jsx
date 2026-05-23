@@ -62,6 +62,8 @@ export default function App() {
   const [simFilters, setSimFilters] = useState({});
   const [oracleSort, setOracleSort] = useState({ col: null, dir: 'asc' });
   const [oracleFilters, setOracleFilters] = useState({});
+  const [posSort, setPosSort] = useState({ col: null, dir: 'asc' });
+  const [posFilters, setPosFilters] = useState({});
   const toastTimer = useRef(null);
 
   const showToast = useCallback((msg) => {
@@ -345,7 +347,7 @@ export default function App() {
       {/* POSITIONS OVERLAY */}
       {showPositions && (
         <div className="modal-backdrop" onClick={() => setShowPositions(false)}>
-          <div className="modal-card" style={{ maxWidth: '860px' }} onClick={e => e.stopPropagation()}>
+          <div className="modal-card" style={{ maxWidth: '1100px' }} onClick={e => e.stopPropagation()}>
             <div className="modal-close-bar">
               <button className="modal-close" onClick={() => setShowPositions(false)}>×</button>
             </div>
@@ -360,80 +362,160 @@ export default function App() {
                     Paper trading active — no positions yet. Positions appear here as inference writes new briefs.
                   </div>
                 ) : (() => {
-                  const totalInvested  = paperPositions.reduce((s, p) => s + (p.cost_basis ?? 0), 0);
-                  const totalValue     = paperPositions.reduce((s, p) => s + ((p.current_price ?? 0) * (p.qty ?? 0)), 0);
-                  const totalPnl       = paperSummary?.total_pnl ?? 0;
-                  const totalPnlPct    = totalInvested > 0 ? (totalPnl / totalInvested * 100) : 0;
-                  const bankroll       = paperSummary?.bankroll ?? 500;
-                  const exposurePct    = bankroll > 0 ? (totalInvested / bankroll * 100) : 0;
-                  const paperGrid      = '2.6fr 0.5fr 0.6fr 0.7fr 0.7fr 0.8fr 1fr 0.8fr';
+                  const STATUS_META = {
+                    OPEN:         { label: 'OPEN',     color: 'var(--blue)' },
+                    TP_READY:     { label: 'TP READY', color: 'var(--green)' },
+                    SL_HIT:       { label: 'SL HIT',   color: 'var(--red)' },
+                    SETTLED_WIN:  { label: 'WIN',       color: 'var(--green)' },
+                    SETTLED_LOSS: { label: 'LOSS',      color: 'var(--red)' },
+                  };
+                  const posGetters = {
+                    entered_at:     p => p.entered_at ?? '',
+                    ticker:         p => p.ticker ?? '',
+                    side:           p => p.side ?? '',
+                    entry_price:    p => p.entry_price ?? 0,
+                    qty:            p => p.qty ?? 0,
+                    cost_basis:     p => p.cost_basis ?? 0,
+                    status:         p => p.status ?? '',
+                    current_price:  p => p.current_price ?? 0,
+                    unrealized_pnl: p => p.unrealized_pnl ?? 0,
+                    won:            p => Math.max(0, p.unrealized_pnl ?? 0),
+                    lost:           p => Math.max(0, -(p.unrealized_pnl ?? 0)),
+                  };
+                  const POS_COLS = ['entered_at','ticker','side','entry_price','qty','cost_basis','status','current_price','unrealized_pnl','won','lost'];
+
+                  // Filter + sort
+                  let rows = paperPositions;
+                  for (const [col, val] of Object.entries(posFilters)) {
+                    if (!val) continue;
+                    rows = rows.filter(r => {
+                      const v = posGetters[col]?.(r);
+                      return v != null && String(v).toLowerCase().includes(val.toLowerCase());
+                    });
+                  }
+                  if (posSort.col && posGetters[posSort.col]) {
+                    rows = [...rows].sort((a, b) => {
+                      const av = posGetters[posSort.col](a) ?? '';
+                      const bv = posGetters[posSort.col](b) ?? '';
+                      const cmp = typeof av === 'number' && typeof bv === 'number'
+                        ? av - bv : String(av).localeCompare(String(bv));
+                      return posSort.dir === 'asc' ? cmp : -cmp;
+                    });
+                  }
+
+                  // Stats over full (unfiltered) list
+                  const totalInvested = paperPositions.reduce((s, p) => s + (p.cost_basis ?? 0), 0);
+                  const totalPnl      = paperPositions.reduce((s, p) => s + (p.unrealized_pnl ?? 0), 0);
+                  const winning       = paperPositions.filter(p => (p.unrealized_pnl ?? 0) > 0).length;
+                  const losing        = paperPositions.filter(p => (p.unrealized_pnl ?? 0) < 0).length;
+                  const openCount     = paperPositions.filter(p => p.status === 'OPEN').length;
+                  const winRate       = (winning + losing) > 0 ? winning / (winning + losing) : null;
+                  const totalWon      = paperPositions.reduce((s, p) => s + Math.max(0, p.unrealized_pnl ?? 0), 0);
+                  const totalLost     = paperPositions.reduce((s, p) => s + Math.max(0, -(p.unrealized_pnl ?? 0)), 0);
+                  const pnlPct        = totalInvested > 0 ? (totalPnl / totalInvested) * 100 : 0;
+                  const wonPct        = totalInvested > 0 ? (totalWon / totalInvested) * 100 : 0;
+                  const lostPct       = totalInvested > 0 ? (totalLost / totalInvested) * 100 : 0;
+
+                  const pi = col => posSort.col === col ? (posSort.dir === 'asc' ? ' ↑' : ' ↓') : ' ↕';
+                  const onP = col => setPosSort(prev => ({ col, dir: prev.col === col && prev.dir === 'asc' ? 'desc' : 'asc' }));
+                  const thP = (align = 'left') => ({ textAlign: align, padding: '6px 8px', fontWeight: 500, cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' });
+
                   return (
-                  <div>
-                    {paperSummary && (
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.75rem', fontSize: '0.7rem', marginBottom: '0.9rem' }}>
-                        <div style={{ padding: '0.6rem 0.75rem', background: 'var(--bg-surface)', borderRadius: 'var(--radius)', border: '1px solid var(--border)' }}>
-                          <div style={{ color: 'var(--text-muted)', fontSize: '0.62rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Bankroll</div>
-                          <div style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--text-primary)' }}>${bankroll.toFixed(0)}</div>
-                          <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)' }}>{exposurePct.toFixed(1)}% deployed</div>
-                        </div>
-                        <div style={{ padding: '0.6rem 0.75rem', background: 'var(--bg-surface)', borderRadius: 'var(--radius)', border: '1px solid var(--border)' }}>
-                          <div style={{ color: 'var(--text-muted)', fontSize: '0.62rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Invested</div>
-                          <div style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--text-primary)' }}>${totalInvested.toFixed(2)}</div>
-                          <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)' }}>across {paperPositions.length} markets</div>
-                        </div>
-                        <div style={{ padding: '0.6rem 0.75rem', background: 'var(--bg-surface)', borderRadius: 'var(--radius)', border: '1px solid var(--border)' }}>
-                          <div style={{ color: 'var(--text-muted)', fontSize: '0.62rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Current Value</div>
-                          <div style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--text-primary)' }}>${totalValue.toFixed(2)}</div>
-                          <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)' }}>mark-to-market</div>
-                        </div>
-                        <div style={{ padding: '0.6rem 0.75rem', background: 'var(--bg-surface)', borderRadius: 'var(--radius)', border: '1px solid var(--border)' }}>
-                          <div style={{ color: 'var(--text-muted)', fontSize: '0.62rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Unrealized P&amp;L</div>
-                          <div style={{ fontSize: '1rem', fontWeight: 600, color: totalPnl >= 0 ? 'var(--green)' : 'var(--red)' }}>
-                            {totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(2)}
+                    <>
+                      {/* STAT STRIP */}
+                      <div style={{ display: 'flex', gap: '1.5rem', marginBottom: '1.25rem', flexWrap: 'wrap' }}>
+                        {[
+                          { label: 'Trades',    value: paperPositions.length,                                           color: 'var(--text-primary)' },
+                          { label: 'Winning',   value: winning,                                                         color: 'var(--green)' },
+                          { label: 'Losing',    value: losing,                                                          color: 'var(--red)' },
+                          { label: 'Open',      value: openCount,                                                       color: 'var(--blue)' },
+                          { label: 'Win Rate',  value: winRate != null ? `${(winRate * 100).toFixed(0)}%` : 'N/A',     color: winRate >= 0.55 ? 'var(--green)' : winRate != null ? 'var(--red)' : 'var(--text-muted)' },
+                          { label: 'Total P&L', value: `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}`,          color: totalPnl >= 0 ? 'var(--green)' : 'var(--red)', sub: `${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%` },
+                          { label: 'Invested',  value: `$${totalInvested.toFixed(2)}`,                                 color: 'var(--text-secondary)' },
+                          { label: 'Won',       value: `$${totalWon.toFixed(2)}`,                                      color: 'var(--green)', sub: `${wonPct.toFixed(2)}%` },
+                          { label: 'Lost',      value: `$${totalLost.toFixed(2)}`,                                     color: 'var(--red)', sub: `${lostPct.toFixed(2)}%` },
+                        ].map(({ label, value, color, sub }) => (
+                          <div key={label} style={{ minWidth: '70px' }}>
+                            <div style={{ fontSize: '0.58rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '2px' }}>{label}</div>
+                            <div style={{ fontSize: '1.05rem', fontWeight: 700, color, fontFamily: 'JetBrains Mono, monospace' }}>{value}</div>
+                            {sub && <div style={{ fontSize: '0.65rem', color, opacity: 0.8, fontFamily: 'JetBrains Mono, monospace', marginTop: '1px' }}>{sub}</div>}
                           </div>
-                          <div style={{ fontSize: '0.62rem', color: totalPnl >= 0 ? 'var(--green)' : 'var(--red)' }}>
-                            {totalPnlPct >= 0 ? '+' : ''}{totalPnlPct.toFixed(2)}%
-                          </div>
-                        </div>
+                        ))}
                       </div>
-                    )}
-                    {(paperSummary?.tp_ready > 0 || paperSummary?.sl_hit > 0 || paperSummary?.settled_win > 0 || paperSummary?.settled_loss > 0) && (
-                      <div style={{ display: 'flex', gap: '1rem', fontSize: '0.68rem', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>
-                        {paperSummary.tp_ready > 0    && <span style={{ color: 'var(--green)' }}>TP Ready ✓ {paperSummary.tp_ready}</span>}
-                        {paperSummary.sl_hit > 0      && <span style={{ color: 'var(--red)' }}>SL Hit ✗ {paperSummary.sl_hit}</span>}
-                        {paperSummary.settled_win > 0  && <span style={{ color: 'var(--green)' }}>Settled Win {paperSummary.settled_win}</span>}
-                        {paperSummary.settled_loss > 0 && <span style={{ color: 'var(--red)' }}>Settled Loss {paperSummary.settled_loss}</span>}
+
+                      {/* TABLE */}
+                      <div style={{ overflowX: 'auto' }}>
+                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.68rem', fontFamily: 'JetBrains Mono, monospace' }}>
+                          <thead>
+                            <tr style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-muted)', fontSize: '0.58rem', textTransform: 'uppercase' }}>
+                              <th onClick={() => onP('entered_at')}    style={thP('left')}>Entry{pi('entered_at')}</th>
+                              <th onClick={() => onP('ticker')}        style={thP('left')}>Market{pi('ticker')}</th>
+                              <th onClick={() => onP('side')}          style={thP('center')}>Side{pi('side')}</th>
+                              <th onClick={() => onP('entry_price')}   style={thP('center')}>Buy{pi('entry_price')}</th>
+                              <th onClick={() => onP('qty')}           style={thP('center')}>Qty{pi('qty')}</th>
+                              <th onClick={() => onP('cost_basis')}    style={thP('center')}>Invested{pi('cost_basis')}</th>
+                              <th onClick={() => onP('status')}        style={thP('center')}>Status{pi('status')}</th>
+                              <th onClick={() => onP('current_price')} style={thP('center')}>Current{pi('current_price')}</th>
+                              <th onClick={() => onP('unrealized_pnl')} style={thP('right')}>P&amp;L{pi('unrealized_pnl')}</th>
+                              <th onClick={() => onP('won')}           style={thP('right')}>Won{pi('won')}</th>
+                              <th onClick={() => onP('lost')}          style={thP('right')}>Lost{pi('lost')}</th>
+                            </tr>
+                            <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                              {POS_COLS.map(col => (
+                                <th key={col} style={{ padding: '2px 4px' }}>
+                                  <input
+                                    type="text"
+                                    value={posFilters[col] ?? ''}
+                                    onChange={e => setPosFilters(f => ({ ...f, [col]: e.target.value }))}
+                                    placeholder="…"
+                                    style={{ width: '100%', fontSize: '0.56rem', padding: '1px 3px', background: 'var(--bg-card)', color: 'var(--text-primary)', border: '1px solid var(--border)', borderRadius: '3px', fontFamily: 'inherit', boxSizing: 'border-box', minWidth: '28px' }}
+                                  />
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {rows.map((p, i) => {
+                              const meta     = STATUS_META[p.status] ?? { label: p.status, color: 'var(--text-muted)' };
+                              const pnlColor = (p.unrealized_pnl ?? 0) >= 0 ? 'var(--green)' : 'var(--red)';
+                              const invested = p.cost_basis ?? 0;
+                              const rowPnlPct = invested > 0 && p.unrealized_pnl != null ? (p.unrealized_pnl / invested) * 100 : null;
+                              return (
+                                <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
+                                  <td style={{ padding: '5px 8px', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{p.entered_at ?? '—'}</td>
+                                  <td style={{ padding: '5px 8px', maxWidth: '220px' }}>
+                                    <div style={{ fontWeight: 600, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={p.title || p.ticker}>{p.ticker}</div>
+                                    {p.title && p.title !== p.ticker && <div style={{ fontSize: '0.58rem', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.title}</div>}
+                                  </td>
+                                  <td style={{ padding: '5px 8px', textAlign: 'center' }}>
+                                    <span style={{ color: p.side === 'yes' ? 'var(--green)' : 'var(--red)', fontWeight: 700 }}>{p.side?.toUpperCase()}</span>
+                                  </td>
+                                  <td style={{ padding: '5px 8px', textAlign: 'center', color: 'var(--text-secondary)' }}>{Math.round((p.entry_price ?? 0) * 100)}¢</td>
+                                  <td style={{ padding: '5px 8px', textAlign: 'center', color: 'var(--text-muted)' }}>{p.qty}</td>
+                                  <td style={{ padding: '5px 8px', textAlign: 'center', color: 'var(--text-secondary)' }}>${invested.toFixed(2)}</td>
+                                  <td style={{ padding: '5px 8px', textAlign: 'center' }}>
+                                    <span style={{ color: meta.color, fontWeight: 700, fontSize: '0.62rem' }}>{meta.label}</span>
+                                  </td>
+                                  <td style={{ padding: '5px 8px', textAlign: 'center', color: 'var(--text-secondary)' }}>
+                                    {p.current_price != null ? `${Math.round(p.current_price * 100)}¢` : '—'}
+                                  </td>
+                                  <td style={{ padding: '5px 8px', textAlign: 'right', fontWeight: 700, color: pnlColor }}>
+                                    <div>{p.unrealized_pnl == null ? '—' : `${p.unrealized_pnl >= 0 ? '+' : ''}$${p.unrealized_pnl.toFixed(2)}`}</div>
+                                    {rowPnlPct != null && <div style={{ fontSize: '0.58rem', fontWeight: 500, opacity: 0.8 }}>{rowPnlPct >= 0 ? '+' : ''}{rowPnlPct.toFixed(2)}%</div>}
+                                  </td>
+                                  <td style={{ padding: '5px 8px', textAlign: 'right', fontWeight: 600, color: 'var(--green)' }}>
+                                    {(p.unrealized_pnl ?? 0) > 0 ? `+$${p.unrealized_pnl.toFixed(2)}` : '—'}
+                                  </td>
+                                  <td style={{ padding: '5px 8px', textAlign: 'right', fontWeight: 600, color: 'var(--red)' }}>
+                                    {(p.unrealized_pnl ?? 0) < 0 ? `$${Math.abs(p.unrealized_pnl).toFixed(2)}` : '—'}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
                       </div>
-                    )}
-                    <div className="orders-table" style={{ marginBottom: '1rem' }}>
-                      <div className="orders-header" style={{ gridTemplateColumns: paperGrid }}>
-                        <span>Market</span><span>Side</span><span>Qty</span>
-                        <span>Entry</span><span>Current</span><span>Invested</span><span>P&amp;L</span><span>Status</span>
-                      </div>
-                      {paperPositions.map((p) => {
-                        const pnlColor = (p.unrealized_pnl ?? 0) >= 0 ? 'var(--green)' : 'var(--red)';
-                        const statusColor = p.status === 'TP_READY' ? 'var(--green)' : p.status === 'SL_HIT' ? 'var(--red)' : p.status === 'SETTLED_WIN' ? 'var(--green)' : p.status === 'SETTLED_LOSS' ? 'var(--red)' : 'var(--text-muted)';
-                        return (
-                          <div key={p.ticker + p.entered_at} className="orders-row" style={{ gridTemplateColumns: paperGrid }}>
-                            <span style={{ overflow: 'hidden', paddingRight: '0.5rem' }} title={p.title}>
-                              <div style={{ fontSize: '0.72rem', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.ticker}</div>
-                              {p.title && p.title !== p.ticker && <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.title}</div>}
-                            </span>
-                            <span className={`order-side ${p.side}`}>{p.side?.toUpperCase()}</span>
-                            <span>{p.qty}</span>
-                            <span>{p.entry_price != null ? `${(p.entry_price * 100).toFixed(1)}¢` : '—'}</span>
-                            <span>{p.current_price != null ? `${(p.current_price * 100).toFixed(1)}¢` : '—'}</span>
-                            <span>{p.cost_basis != null ? `$${p.cost_basis.toFixed(2)}` : '—'}</span>
-                            <span style={{ color: pnlColor }}>
-                              {p.unrealized_pnl == null ? '—' : `${p.unrealized_pnl >= 0 ? '+' : ''}$${p.unrealized_pnl.toFixed(2)}`}
-                              {p.roi_pct != null && <div style={{ fontSize: '0.6rem', color: pnlColor, opacity: 0.8 }}>{p.roi_pct > 0 ? '+' : ''}{p.roi_pct}%</div>}
-                            </span>
-                            <span style={{ fontSize: '0.65rem', color: statusColor }}>{p.status}</span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
+                    </>
                   );
                 })()
               ) : orders.length === 0 ? (

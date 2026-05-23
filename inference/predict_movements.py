@@ -14,6 +14,7 @@ import chromadb
 from openai import OpenAI
 from sentence_transformers import SentenceTransformer
 import json
+import math
 import pandas as pd
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
@@ -246,27 +247,40 @@ def fetch_rag_context(collections, query_text, current_time, window_mins=4320):
 
     for coll in collections:
         query_embedding = _get_query_embedding(coll.name, query_text)
+        # No where= filter: ChromaDB metadata scans are O(n) — ~50s per query on large
+        # collections. ANN (HNSW) without a filter is near-instant. Time-window filtering
+        # and time-decay scoring are applied below in Python on the small result set.
         results = coll.query(
             query_embeddings=query_embedding,
-            n_results=5,
-            where={
-                "$and": [
-                    {"ingested_timestamp": {"$gte": start_ts}},
-                    {"ingested_timestamp": {"$lte": end_ts}}
-                ]
-            },
+            n_results=15,
             include=["documents", "metadatas", "distances"]
         )
         if results['documents'] and results['documents'][0]:
             for i in range(len(results['documents'][0])):
-                distance = results['distances'][0][i]
-                score    = 1.0 / (1.0 + distance)
-                if score >= SIMILARITY_FLOOR:
-                    scored_docs.append({
-                        "source":  results['metadatas'][0][i].get("source", coll.name),
-                        "content": results['documents'][0][i],
-                        "score":   score,
-                    })
+                meta = results['metadatas'][0][i]
+                # Use published_timestamp (article publish time) when available — set by
+                # embed_silver_data.py for news articles. Falls back to ingested_timestamp
+                # for GDELT records and older ChromaDB entries that predate this field.
+                pub_ts = int(meta.get("published_timestamp", meta.get("ingested_timestamp", 0)))
+                if pub_ts < start_ts or pub_ts > end_ts:
+                    continue
+                distance       = results['distances'][0][i]
+                semantic_score = 1.0 / (1.0 + distance)
+                if semantic_score < SIMILARITY_FLOOR:
+                    continue
+                # Time-decay: blend semantic quality (60%) with recency (40%).
+                # Half-life = 24h — an article published 24h ago contributes 80% of a fresh one.
+                # Quality gate (MIN_RAG_SCORE) checks semantic_score so stale-but-topical
+                # articles still clear the gate; decay only affects ranking order.
+                hours_old = max(0.0, (end_ts - pub_ts) / 3600.0)
+                recency   = math.exp(-0.693 * hours_old / 24.0)
+                score     = semantic_score * (0.6 + 0.4 * recency)
+                scored_docs.append({
+                    "source":         meta.get("source", coll.name),
+                    "content":        results['documents'][0][i],
+                    "score":          score,
+                    "semantic_score": semantic_score,
+                })
 
     return sorted(scored_docs, key=lambda x: x['score'], reverse=True)
 
@@ -424,10 +438,11 @@ def main():
             history_df, _ = _append_inference(history_df, ticker, score, 0, 0)
             continue
 
-        # RAG quality gate: if the best-matching doc isn't actually relevant,
-        # the LLM will return 50% confidence anyway — skip the API call entirely.
+        # RAG quality gate: checks raw semantic similarity, not the time-decayed score.
+        # A topical article from 48h ago should still clear the gate — decay only affects
+        # which docs the LLM sees first (ranking), not whether we call the LLM at all.
         MIN_RAG_SCORE = 0.63
-        best_rag = max(d['score'] for d in context_docs)
+        best_rag = max(d['semantic_score'] for d in context_docs)
         if best_rag < MIN_RAG_SCORE:
             print(f"    > RAG quality too low ({best_rag:.2f} < {MIN_RAG_SCORE}) — no signal, adding to cooldown.")
             history_df, _ = _append_inference(history_df, ticker, score, 0, 0)

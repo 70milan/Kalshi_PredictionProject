@@ -168,7 +168,10 @@ def sync_collection(con, chroma_client, table_path, collection_name, text_cols, 
             select_parts.append(f"substring({c}, 1, 2000) as {c}")
 
     src_val = "source" if "news" in collection_name else "'GDELT' as source"
-    select_list = ", ".join(set([id_col] + select_parts + ["ingested_at", src_val, f"{sentiment_col} as sentiment"]))
+    # Include published_at for news so retrieval can filter/rank by article publish time.
+    # GDELT records don't have this field; fallback to ingested_at handled in metadata build.
+    pub_val = ["published_at"] if "news" in collection_name else []
+    select_list = ", ".join(set([id_col] + select_parts + ["ingested_at", src_val, f"{sentiment_col} as sentiment"] + pub_val))
 
     try:
         query = f"SELECT {select_list} FROM delta_scan('{table_path}')"
@@ -225,11 +228,22 @@ def sync_collection(con, chroma_client, table_path, collection_name, text_cols, 
                 ts = int(datetime.fromisoformat(ingested_at.replace('Z', '+00:00')).timestamp())
             except Exception:
                 ts = 0
+            # published_timestamp: when the article was actually published (not ingested).
+            # Falls back to ingested_timestamp for GDELT records and articles missing pubdate.
+            pub_at_str = str(row.get("published_at", "") or "")
+            try:
+                if pub_at_str and pub_at_str not in ("None", "NaT", "nan", "nat", ""):
+                    pub_ts = int(datetime.fromisoformat(pub_at_str.replace('Z', '+00:00').replace(' ', 'T')).timestamp())
+                else:
+                    pub_ts = ts
+            except Exception:
+                pub_ts = ts
             metadatas.append({
-                "ingested_at":       ingested_at,
+                "ingested_at":        ingested_at,
                 "ingested_timestamp": ts,
-                "source":            row.get("source", "GDELT"),
-                "sentiment":         float(row.get("sentiment", 0.0) or 0.0),
+                "published_timestamp": pub_ts,
+                "source":             row.get("source", "GDELT"),
+                "sentiment":          float(row.get("sentiment", 0.0) or 0.0),
             })
 
         collection.upsert(ids=ids, embeddings=embeddings, documents=combined_text, metadatas=metadatas)

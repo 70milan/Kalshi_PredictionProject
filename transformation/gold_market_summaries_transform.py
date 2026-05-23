@@ -116,7 +116,7 @@ def generate_mispricing_scores(spark, kalshi_history_path, gdelt_summaries_path,
     else:
         # VADER is already -1/+1
         df_n = spark.read.format("delta").load(news_summaries_path) \
-            .withColumn("norm_sentiment", F.col("sent_15m"))
+            .withColumn("norm_sentiment", F.col("tone_15m"))
 
     # 4. Apply Bridge / Mapping
     df_map = spark.read.csv(mapping_file, header=True)
@@ -283,7 +283,7 @@ def generate_mispricing_scores(spark, kalshi_history_path, gdelt_summaries_path,
     # Flag candidates > 80
     df_final = df_final.withColumn(
         "flagged_candidate",
-        (F.col("mispricing_score") >= 80.0)
+        (F.col("mispricing_score") > 65.0)
     ).withColumn(
         "llm_brief", F.lit(None).cast("string")
     )
