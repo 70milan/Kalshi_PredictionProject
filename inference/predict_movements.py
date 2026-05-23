@@ -36,6 +36,9 @@ GOLD_BRIEFS            = os.path.join(PROJECT_ROOT, "data", "gold", "intelligenc
 CHROMA_PATH            = os.path.join(PROJECT_ROOT, "data", "chroma")
 INFERENCE_HISTORY_PATH = os.path.join(PROJECT_ROOT, "data", "gold", "inference_history.parquet")
 LEDGER_PATH            = os.path.join(PROJECT_ROOT, "data", "gold", "position_ledger.parquet")
+# Bronze open-markets snapshot — carries close_time (not present in the gold ledger), used
+# to gate candidates by days-to-expiry. Refreshed every ~2 min by the kalshi ingestor.
+BRONZE_LATEST          = os.path.join(PROJECT_ROOT, "data", "bronze", "kalshi_markets", "open", "latest.parquet")
 
 SIMILARITY_FLOOR      = 0.50
 SIMULATED_TRADES_PATH = os.path.join(PROJECT_ROOT, "data", "gold", "simulated_trades.csv")
@@ -59,6 +62,13 @@ SPIKE_FACTOR         = float(os.getenv("INFERENCE_SPIKE_FACTOR",       "1.5"))
 SPIKE_MIN_FLOOR      = float(os.getenv("INFERENCE_SPIKE_MIN_FLOOR",    "3.0"))
 MAX_SUPPRESS_HOURS   = float(os.getenv("INFERENCE_MAX_SUPPRESS_HOURS", "24"))
 MIN_RECHECK_MINUTES  = float(os.getenv("INFERENCE_MIN_RECHECK_MIN",    "15"))
+
+# Contract-expiry window (days-to-close). The "delayed reaction" thesis needs time to play
+# out: skip contracts resolving too soon (spread friction too high, news already priced in,
+# imminent binary settlement) and ones too far out (a news spike today is noise against a
+# multi-year horizon). Markets outside this window never reach the LLM.
+MIN_DAYS_TO_CLOSE    = float(os.getenv("INFERENCE_MIN_DAYS_TO_CLOSE", "30"))
+MAX_DAYS_TO_CLOSE    = float(os.getenv("INFERENCE_MAX_DAYS_TO_CLOSE", "365"))
 
 # gpt-4o-mini list price (USD per 1M tokens). Override via env if it changes.
 OPENAI_INPUT_PRICE_PER_MTOK  = float(os.getenv("OPENAI_INPUT_PRICE_PER_MTOK", "0.15"))
@@ -84,12 +94,14 @@ def _get_query_embedding(collection_name: str, text: str):
 # ---------------------------------------------------------
 # 2. CANDIDATE SELECTION
 # ---------------------------------------------------------
-SERIES_LIMIT = int(os.getenv("SERIES_LIMIT", "2"))  # max candidates per ticker series
+SERIES_LIMIT = int(os.getenv("SERIES_LIMIT", "3"))  # max candidates per ticker series
 
 
 def get_predictive_candidates(con, history_df, min_score=80.0):
     print(f"[Predictive] Scanning Gold Mispricing Ledger for scores >= {min_score} "
-          f"(limit={CANDIDATE_LIMIT}, max {SERIES_LIMIT} per series)...")
+          f"(limit={CANDIDATE_LIMIT}, max {SERIES_LIMIT} per series, "
+          f"expiry {MIN_DAYS_TO_CLOSE:.0f}-{MAX_DAYS_TO_CLOSE:.0f}d)...")
+    bronze_latest = BRONZE_LATEST.replace("\\", "/")
 
     # Register the schema-normalised history (see _load_inference_history) as a temp view
     # so the eligibility SQL never references a column an older parquet might lack. The
@@ -111,14 +123,20 @@ def get_predictive_candidates(con, history_df, min_score=80.0):
         GROUP BY ticker
     ),
     latest AS (
-        SELECT ticker, title, yes_bid AS current_odds, delta_15m, mispricing_score,
-               max_spike_multiplier, sentiment_signal, ingested_at,
-               SPLIT_PART(ticker, '-', 1) AS series
-        FROM delta_scan('{GOLD_MISPRICING}')
-        WHERE mispricing_score >= 80
-          AND TRY_CAST(ingested_at AS TIMESTAMPTZ) >= CURRENT_TIMESTAMP - INTERVAL '48 hours'
-          AND yes_bid BETWEEN 0.25 AND 0.75
-        QUALIFY ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY ingested_at DESC) = 1
+        SELECT g.ticker, g.title, g.yes_bid AS current_odds, g.delta_15m, g.mispricing_score,
+               g.max_spike_multiplier, g.sentiment_signal, g.ingested_at,
+               SPLIT_PART(g.ticker, '-', 1) AS series
+        FROM delta_scan('{GOLD_MISPRICING}') g
+        JOIN (
+            SELECT ticker, TRY_CAST(close_time AS TIMESTAMPTZ) AS close_ts
+            FROM read_parquet('{bronze_latest}')
+        ) b ON g.ticker = b.ticker
+        WHERE g.mispricing_score >= 80
+          AND TRY_CAST(g.ingested_at AS TIMESTAMPTZ) >= CURRENT_TIMESTAMP - INTERVAL '48 hours'
+          AND g.yes_bid BETWEEN 0.25 AND 0.75
+          AND b.close_ts IS NOT NULL                                                          -- market still open
+          AND DATE_DIFF('day', CURRENT_TIMESTAMP, b.close_ts) BETWEEN {MIN_DAYS_TO_CLOSE} AND {MAX_DAYS_TO_CLOSE}
+        QUALIFY ROW_NUMBER() OVER (PARTITION BY g.ticker ORDER BY g.ingested_at DESC) = 1
     ),
     eligible AS (
         SELECT l.*
