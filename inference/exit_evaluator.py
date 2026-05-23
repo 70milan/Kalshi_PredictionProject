@@ -38,7 +38,7 @@ EXIT_SIGNALS_PATH  = os.path.join(PROJECT_ROOT, "data", "gold", "exit_signals")
 # the strategy went from -$1.16 to +$10.72 across 13 closed trades, with R/R 2.36.
 # Override via env if you want to retune without redeploying.
 TAKE_PROFIT_ROI     = float(os.getenv("TAKE_PROFIT_ROI", "0.65"))   # sell when unrealized gain >= 65% of entry price
-STOP_LOSS_ROI       = float(os.getenv("STOP_LOSS_ROI",   "0.10"))   # cut when unrealized loss  >= 10% of entry price
+STOP_LOSS_ROI       = float(os.getenv("STOP_LOSS_ROI",   "0.20"))   # cut when unrealized loss  >= 20% of entry price (absorbs typical bid/ask spread)
 PROFIT_LOCK_CAPTURE = 0.80   # backstop: take profit at 80% of max possible gain
 STOP_LOSS_THRESHOLD = 0.20   # backstop: cut at 20c against entry
 TIME_DECAY_HOURS    = 24     # resolves within X hours
@@ -58,13 +58,13 @@ def evaluate_position(pos, live_yes_bid, live_yes_ask, close_time, today_brief):
     entry_price = float(pos['entry_price'])
     qty         = float(pos['qty'])
 
-    # Compute the price we'd RECEIVE if we sold now (our side's bid)
-    if side == 'yes':
-        current_value = live_yes_bid           # sell YES at YES bid
-    else:
-        current_value = 1.0 - live_yes_ask     # sell NO at NO bid = 1 - YES ask
+    # Mark and exit at the bid — what you'd actually receive selling now.
+    # STOP_LOSS_ROI=20% provides enough headroom to absorb the typical bid/ask spread
+    # without triggering false stops the moment a position opens.
+    mark_value = live_yes_bid if side == 'yes' else (1.0 - live_yes_ask)
+    exit_value = mark_value
 
-    unrealized_pnl_per = current_value - entry_price
+    unrealized_pnl_per = mark_value - entry_price
     max_gain_per       = 1.0 - entry_price
     capture_pct        = (unrealized_pnl_per / max_gain_per) if max_gain_per > 0 else 0.0
     roi_pct            = (unrealized_pnl_per / entry_price)  if entry_price > 0 else 0.0
@@ -76,7 +76,7 @@ def evaluate_position(pos, live_yes_bid, live_yes_ask, close_time, today_brief):
             'action':                'SELL_PROFIT',
             'reason':                f"ROI +{roi_pct*100:.1f}% hit take-profit target ({TAKE_PROFIT_ROI*100:.0f}%). Lock it in.",
             'urgency':               4,
-            'suggested_exit_price':  round(current_value, 4),
+            'suggested_exit_price':  round(exit_value, 4),
             'unrealized_pnl':        round(total_pnl, 4),
             'capture_pct':           round(capture_pct, 4),
             'roi_pct':               round(roi_pct, 4),
@@ -88,7 +88,7 @@ def evaluate_position(pos, live_yes_bid, live_yes_ask, close_time, today_brief):
             'action':                'SELL_LOSS',
             'reason':                f"ROI {roi_pct*100:.1f}% hit stop-loss ({STOP_LOSS_ROI*100:.0f}%). Cut exposure.",
             'urgency':               5,
-            'suggested_exit_price':  round(current_value, 4),
+            'suggested_exit_price':  round(exit_value, 4),
             'unrealized_pnl':        round(total_pnl, 4),
             'capture_pct':           round(capture_pct, 4),
             'roi_pct':               round(roi_pct, 4),
@@ -100,7 +100,7 @@ def evaluate_position(pos, live_yes_bid, live_yes_ask, close_time, today_brief):
             'action':                'SELL_PROFIT',
             'reason':                f"Captured {capture_pct*100:.0f}% of max gain. Lock it in.",
             'urgency':               4,
-            'suggested_exit_price':  round(current_value, 4),
+            'suggested_exit_price':  round(exit_value, 4),
             'unrealized_pnl':        round(total_pnl, 4),
             'capture_pct':           round(capture_pct, 4),
             'roi_pct':               round(roi_pct, 4),
@@ -112,7 +112,7 @@ def evaluate_position(pos, live_yes_bid, live_yes_ask, close_time, today_brief):
             'action':                'SELL_LOSS',
             'reason':                f"Market moved {abs(unrealized_pnl_per)*100:.0f}c against entry. Thesis broken.",
             'urgency':               5,
-            'suggested_exit_price':  round(current_value, 4),
+            'suggested_exit_price':  round(exit_value, 4),
             'unrealized_pnl':        round(total_pnl, 4),
             'capture_pct':           round(capture_pct, 4),
             'roi_pct':               round(roi_pct, 4),
@@ -128,7 +128,7 @@ def evaluate_position(pos, live_yes_bid, live_yes_ask, close_time, today_brief):
                 'action':                'SELL_FLIP',
                 'reason':                f"Today's brief recommends {new_side.upper()} — opposite of our {side.upper()} position.",
                 'urgency':               3,
-                'suggested_exit_price':  round(current_value, 4),
+                'suggested_exit_price':  round(exit_value, 4),
                 'unrealized_pnl':        round(total_pnl, 4),
                 'capture_pct':           round(capture_pct, 4),
                 'roi_pct':               round(roi_pct, 4),
@@ -146,7 +146,7 @@ def evaluate_position(pos, live_yes_bid, live_yes_ask, close_time, today_brief):
                     'action':                'SELL_TIMEOUT',
                     'reason':                f"Resolves in {hours_to_close:.0f}h with no momentum. Avoid binary settlement risk.",
                     'urgency':               2,
-                    'suggested_exit_price':  round(current_value, 4),
+                    'suggested_exit_price':  round(exit_value, 4),
                     'unrealized_pnl':        round(total_pnl, 4),
                     'capture_pct':           round(capture_pct, 4),
                     'roi_pct':               round(roi_pct, 4),
@@ -159,7 +159,7 @@ def evaluate_position(pos, live_yes_bid, live_yes_ask, close_time, today_brief):
         'action':                'HOLD',
         'reason':                f"P&L: ${total_pnl:+.2f} (ROI {roi_pct*100:+.1f}%). No exit trigger.",
         'urgency':               0,
-        'suggested_exit_price':  round(current_value, 4),
+        'suggested_exit_price':  round(exit_value, 4),
         'unrealized_pnl':        round(total_pnl, 4),
         'capture_pct':           round(capture_pct, 4),
         'roi_pct':               round(roi_pct, 4),

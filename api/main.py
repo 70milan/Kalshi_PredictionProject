@@ -548,8 +548,8 @@ def get_exit_signals():
             for s in signals:
                 if s.get("ticker") != ticker:
                     continue
-                side     = s.get("side", "yes")
-                current  = yes_bid if side == "yes" else (1.0 - yes_ask)
+                side    = s.get("side", "yes")
+                current = yes_bid if side == "yes" else (1.0 - yes_ask)
                 entry    = float(s.get("entry_price") or 0)
                 qty      = float(s.get("qty") or 0)
                 pnl_per  = current - entry
@@ -797,30 +797,30 @@ def get_paper_positions():
     positions = []
     total_pnl = 0.0
     for _, trade in trades_df.iterrows():
-        ticker     = str(trade["ticker"])
-        side       = str(trade["side"])
-        qty        = int(trade["count"])
+        ticker      = str(trade["ticker"])
+        side        = str(trade["side"])
+        qty         = int(trade["count"])
         entry_price = float(trade["price_dollars"])
         cost_basis  = round(qty * entry_price, 2)
         ts          = str(trade.get("timestamp", ""))[:10]
+        is_closed   = "closed_at" in trade.index and pd.notna(trade.get("closed_at"))
 
-        current_price = None
+        current_price  = None
         unrealized_pnl = None
-        status = "OPEN"
+        status         = "OPEN"
 
         if ticker in settled_map:
             result = settled_map[ticker]
-            won = (result == side)
+            won    = (result == side)
             exit_price = 1.0 if won else 0.0
-            pnl = round((exit_price - entry_price) * qty, 2)
+            pnl    = round((exit_price - entry_price) * qty, 2)
             status = "SETTLED_WIN" if won else "SETTLED_LOSS"
-            current_price = exit_price
+            current_price  = exit_price
             unrealized_pnl = pnl
         elif ticker in price_map:
             p = price_map[ticker]
-            current_price = p["yes_bid"] if side == "yes" else (1.0 - p["yes_ask"])
+            current_price  = p["yes_bid"] if side == "yes" else (1.0 - p["yes_ask"])
             unrealized_pnl = round((current_price - entry_price) * qty, 2)
-            # Check TP/SL against current price
             roi = (current_price - entry_price) / entry_price if entry_price > 0 else 0
             from inference.exit_evaluator import TAKE_PROFIT_ROI, STOP_LOSS_ROI
             if roi >= TAKE_PROFIT_ROI:
@@ -828,24 +828,32 @@ def get_paper_positions():
             elif roi <= -STOP_LOSS_ROI:
                 status = "SL_HIT"
 
-        total_pnl += unrealized_pnl or 0
+        # Manually closed via UI — keep row visible but override status.
+        if is_closed:
+            status = "CLOSED"
+
+        # Closed positions don't count toward live P&L.
+        if not is_closed:
+            total_pnl += unrealized_pnl or 0
+
         roi_pct = round((current_price - entry_price) / entry_price * 100, 1) if current_price is not None else None
 
         positions.append({
-            "ticker":        ticker,
-            "title":         title_map.get(ticker, ticker),
-            "side":          side,
-            "qty":           qty,
-            "entry_price":   round(entry_price, 4),
-            "current_price": round(current_price, 4) if current_price is not None else None,
-            "cost_basis":    cost_basis,
+            "ticker":         ticker,
+            "title":          title_map.get(ticker, ticker),
+            "side":           side,
+            "qty":            qty,
+            "entry_price":    round(entry_price, 4),
+            "current_price":  round(current_price, 4) if current_price is not None else None,
+            "cost_basis":     cost_basis,
             "unrealized_pnl": unrealized_pnl,
-            "roi_pct":       roi_pct,
-            "status":        status,
-            "entered_at":    ts,
+            "roi_pct":        roi_pct,
+            "status":         status,
+            "entered_at":     ts,
         })
 
-    positions.sort(key=lambda p: (0 if p["status"] in ("SL_HIT", "TP_READY") else 1, p.get("roi_pct") or 0))
+    STATUS_ORDER = {"SL_HIT": 0, "CLOSED": 1, "TP_READY": 2, "OPEN": 3, "SETTLED_WIN": 4, "SETTLED_LOSS": 5}
+    positions.sort(key=lambda p: (STATUS_ORDER.get(p["status"], 9), p.get("roi_pct") or 0))
 
     return {
         "positions": positions,
@@ -856,10 +864,27 @@ def get_paper_positions():
             "sl_hit":      sum(1 for p in positions if p["status"] == "SL_HIT"),
             "settled_win": sum(1 for p in positions if p["status"] == "SETTLED_WIN"),
             "settled_loss": sum(1 for p in positions if p["status"] == "SETTLED_LOSS"),
+            "closed":      sum(1 for p in positions if p["status"] == "CLOSED"),
             "bankroll":    DEFAULT_BANKROLL,
             "as_of":       datetime.now(timezone.utc).isoformat(),
         }
     }
+
+
+@app.post("/api/paper/positions/{ticker}/close")
+def close_paper_position(ticker: str):
+    """Mark a paper position as manually closed (stamps closed_at in the CSV row)."""
+    if not os.path.exists(SIMULATED_TRADES_PATH):
+        raise HTTPException(status_code=404, detail="No trades file found")
+    df = pd.read_csv(SIMULATED_TRADES_PATH)
+    if "closed_at" not in df.columns:
+        df["closed_at"] = None
+    mask = (df["ticker"] == ticker) & df["closed_at"].isna()
+    if not mask.any():
+        raise HTTPException(status_code=404, detail=f"No open position for {ticker}")
+    df.loc[mask, "closed_at"] = datetime.now(timezone.utc).isoformat()
+    df.to_csv(SIMULATED_TRADES_PATH, index=False)
+    return {"closed": ticker, "rows": int(mask.sum())}
 
 
 @app.get("/api/portfolio/fills")

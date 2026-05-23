@@ -35,6 +35,7 @@ GOLD_MISPRICING        = os.path.join(PROJECT_ROOT, "data", "gold", "mispricing_
 GOLD_BRIEFS            = os.path.join(PROJECT_ROOT, "data", "gold", "intelligence_briefs")
 CHROMA_PATH            = os.path.join(PROJECT_ROOT, "data", "chroma")
 INFERENCE_HISTORY_PATH = os.path.join(PROJECT_ROOT, "data", "gold", "inference_history.parquet")
+LEDGER_PATH            = os.path.join(PROJECT_ROOT, "data", "gold", "position_ledger.parquet")
 
 SIMILARITY_FLOOR      = 0.50
 SIMULATED_TRADES_PATH = os.path.join(PROJECT_ROOT, "data", "gold", "simulated_trades.csv")
@@ -46,11 +47,18 @@ OPENAI_MODEL  = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 # Per-cycle scan limits.
 CANDIDATE_LIMIT      = int(os.getenv("CANDIDATE_LIMIT", "50"))
 
-# Cooldown: skip a ticker if it was analyzed within COOLDOWN_HOURS AND its
-# mispricing_score has moved less than COOLDOWN_SCORE_DELTA points since.
-# This is what kills the "same 3 briefs re-analyzed every cycle" loop.
-COOLDOWN_HOURS       = float(os.getenv("INFERENCE_COOLDOWN_HOURS", "2"))
-COOLDOWN_SCORE_DELTA = float(os.getenv("INFERENCE_COOLDOWN_SCORE_DELTA", "5"))
+# Change-based re-eligibility: a ticker already analyzed stays suppressed until
+# something MATERIAL changes — its price moved >= PRICE_DELTA, or news re-spiked to
+# >= SPIKE_FACTOR x its last recorded spike (floored at SPIKE_MIN_FLOOR so a tiny prior
+# spike can't make re-trigger trivial). MAX_SUPPRESS_HOURS is a safety ceiling so held
+# positions still get a fresh daily brief (exit_evaluator's thesis-flip depends on it).
+# MIN_RECHECK_MINUTES is an anti-thrash floor so a jittery price can't re-burn the LLM.
+# This replaces the old pure-time cooldown that re-burned every ticker every 2h.
+PRICE_DELTA          = float(os.getenv("INFERENCE_PRICE_DELTA",        "0.05"))
+SPIKE_FACTOR         = float(os.getenv("INFERENCE_SPIKE_FACTOR",       "1.5"))
+SPIKE_MIN_FLOOR      = float(os.getenv("INFERENCE_SPIKE_MIN_FLOOR",    "3.0"))
+MAX_SUPPRESS_HOURS   = float(os.getenv("INFERENCE_MAX_SUPPRESS_HOURS", "24"))
+MIN_RECHECK_MINUTES  = float(os.getenv("INFERENCE_MIN_RECHECK_MIN",    "15"))
 
 # gpt-4o-mini list price (USD per 1M tokens). Override via env if it changes.
 OPENAI_INPUT_PRICE_PER_MTOK  = float(os.getenv("OPENAI_INPUT_PRICE_PER_MTOK", "0.15"))
@@ -79,42 +87,55 @@ def _get_query_embedding(collection_name: str, text: str):
 SERIES_LIMIT = int(os.getenv("SERIES_LIMIT", "2"))  # max candidates per ticker series
 
 
-SERIES_LIMIT = int(os.getenv("SERIES_LIMIT", "2"))  # max candidates per ticker series
-
-
-def get_predictive_candidates(con, min_score=80.0):
+def get_predictive_candidates(con, history_df, min_score=80.0):
     print(f"[Predictive] Scanning Gold Mispricing Ledger for scores >= {min_score} "
           f"(limit={CANDIDATE_LIMIT}, max {SERIES_LIMIT} per series)...")
 
-    # Pre-filter cooled-down tickers in SQL so they never occupy a candidate slot.
-    # Score-delta exception (re-analyze if score moved) stays in the Python loop.
-    history_filter = "1=1"  # fallback: no filter if history file missing
-    if os.path.exists(INFERENCE_HISTORY_PATH):
-        try:
-            hist_path = INFERENCE_HISTORY_PATH.replace("\\", "/")
-            history_filter = f"""
-                ticker NOT IN (
-                    SELECT DISTINCT ticker
-                    FROM read_parquet('{hist_path}')
-                    WHERE TRY_CAST(analyzed_at AS TIMESTAMPTZ)
-                          >= CURRENT_TIMESTAMP - INTERVAL '{COOLDOWN_HOURS} hours'
-                )
-            """
-        except Exception:
-            pass  # unreadable history — fall back to no pre-filter
+    # Register the schema-normalised history (see _load_inference_history) as a temp view
+    # so the eligibility SQL never references a column an older parquet might lack. The
+    # 'eligible' CTE is the change-based gate: a previously-analyzed ticker only re-enters
+    # the candidate pool if its price moved, news re-spiked, or the safety ceiling elapsed.
+    try:
+        con.register("inference_history_tmp", history_df)
+    except Exception as e:
+        print(f"[Predictive] WARN: could not register history ({e}) — treating all as eligible.")
 
     query = f"""
-    WITH latest AS (
+    WITH last_hist AS (
+        SELECT
+            ticker,
+            MAX(TRY_CAST(analyzed_at AS TIMESTAMPTZ)) AS analyzed_at,
+            ARG_MAX(TRY_CAST(last_price AS DOUBLE), TRY_CAST(analyzed_at AS TIMESTAMPTZ)) AS last_price,
+            ARG_MAX(TRY_CAST(last_spike AS DOUBLE), TRY_CAST(analyzed_at AS TIMESTAMPTZ)) AS last_spike
+        FROM inference_history_tmp
+        GROUP BY ticker
+    ),
+    latest AS (
         SELECT ticker, title, yes_bid AS current_odds, delta_15m, mispricing_score,
                max_spike_multiplier, sentiment_signal, ingested_at,
                SPLIT_PART(ticker, '-', 1) AS series
         FROM delta_scan('{GOLD_MISPRICING}')
-        WHERE flagged_candidate = true
-          AND mispricing_score >= {min_score}
+        WHERE mispricing_score >= 80
           AND TRY_CAST(ingested_at AS TIMESTAMPTZ) >= CURRENT_TIMESTAMP - INTERVAL '48 hours'
           AND yes_bid BETWEEN 0.25 AND 0.75
-          AND {history_filter}
         QUALIFY ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY ingested_at DESC) = 1
+    ),
+    eligible AS (
+        SELECT l.*
+        FROM latest l
+        LEFT JOIN last_hist h ON l.ticker = h.ticker
+        WHERE
+            h.ticker IS NULL                                       -- never analyzed
+            OR h.analyzed_at IS NULL                               -- pre-migration row, no snapshot -> re-seed once
+            OR (
+                h.analyzed_at < CURRENT_TIMESTAMP - INTERVAL '{MIN_RECHECK_MINUTES} minutes'  -- anti-thrash floor
+                AND (
+                    h.last_price IS NULL                                                       -- no price snapshot yet
+                    OR ABS(l.current_odds - h.last_price) >= {PRICE_DELTA}                     -- price moved
+                    OR l.max_spike_multiplier >= GREATEST(COALESCE(h.last_spike, 0) * {SPIKE_FACTOR}, {SPIKE_MIN_FLOOR})  -- news re-spiked
+                    OR h.analyzed_at < CURRENT_TIMESTAMP - INTERVAL '{MAX_SUPPRESS_HOURS} hours'  -- safety ceiling
+                )
+            )
     ),
     ranked AS (
         SELECT *,
@@ -122,7 +143,7 @@ def get_predictive_candidates(con, min_score=80.0):
                    PARTITION BY series
                    ORDER BY mispricing_score DESC, ABS(COALESCE(delta_15m, 0)) DESC
                ) AS series_rank
-        FROM latest
+        FROM eligible
     )
     SELECT ticker, title, current_odds, delta_15m, mispricing_score,
            max_spike_multiplier, sentiment_signal, ingested_at
@@ -139,38 +160,59 @@ def get_predictive_candidates(con, min_score=80.0):
     except Exception as e:
         print(f"[Predictive] ERROR checking Gold ledger: {e}")
         return pd.DataFrame()
+    finally:
+        try:
+            con.unregister("inference_history_tmp")
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------
 # 3. COOLDOWN + BUDGET HELPERS
 # ---------------------------------------------------------
-HISTORY_COLS = ["ticker", "analyzed_at", "score", "input_tokens", "output_tokens", "cost_usd"]
+HISTORY_COLS = ["ticker", "analyzed_at", "score", "last_price", "last_spike",
+                "input_tokens", "output_tokens", "cost_usd"]
 
 
 def _load_inference_history():
     if not os.path.exists(INFERENCE_HISTORY_PATH):
         return pd.DataFrame(columns=HISTORY_COLS)
     try:
-        return pd.read_parquet(INFERENCE_HISTORY_PATH)
+        df = pd.read_parquet(INFERENCE_HISTORY_PATH)
     except Exception:
         return pd.DataFrame(columns=HISTORY_COLS)
+    # Schema-safe: backfill any column an older parquet predates, then return a stable
+    # column order. This is what lets `con.register` + the eligibility SQL reference
+    # last_price / last_spike even on history files written before those existed.
+    for col in HISTORY_COLS:
+        if col not in df.columns:
+            df[col] = pd.NA
+    return df[HISTORY_COLS]
 
 
-def _should_skip_ticker(ticker, current_score, history_df):
-    if history_df.empty:
-        return False
-    matches = history_df[history_df["ticker"] == ticker]
-    if matches.empty:
-        return False
-    latest    = matches.sort_values("analyzed_at", ascending=False).iloc[0]
-    last_time = pd.to_datetime(latest["analyzed_at"], utc=True, errors="coerce")
-    if pd.isna(last_time):
-        return False
-    age_hours = (datetime.now(timezone.utc) - last_time).total_seconds() / 3600.0
-    if age_hours >= COOLDOWN_HOURS:
-        return False
-    last_score = float(latest["score"]) if pd.notna(latest["score"]) else 0.0
-    return abs(float(current_score) - last_score) < COOLDOWN_SCORE_DELTA
+def _load_open_tickers():
+    """Tickers we currently hold — used to keep writing briefs (for exit-logic /
+    thesis-flip) while suppressing a SECOND entry (monitor-only). Unions the position
+    ledger with un-closed rows in simulated_trades.csv so a freshly-entered ticker is
+    covered even before build_position_ledger.py has rebuilt the ledger."""
+    held = set()
+    if os.path.exists(LEDGER_PATH):
+        try:
+            led = pd.read_parquet(LEDGER_PATH)
+            if not led.empty and "ticker" in led.columns:
+                held.update(led["ticker"].astype(str).tolist())
+        except Exception:
+            pass
+    if os.path.exists(SIMULATED_TRADES_PATH):
+        try:
+            tr = pd.read_csv(SIMULATED_TRADES_PATH)
+            if not tr.empty and "ticker" in tr.columns:
+                if "closed_at" in tr.columns:
+                    tr = tr[tr["closed_at"].isna()]
+                held.update(tr["ticker"].astype(str).tolist())
+        except Exception:
+            pass
+    return held
 
 
 def _today_spend(history_df):
@@ -184,8 +226,11 @@ def _today_spend(history_df):
         return 0.0
 
 
-def _append_inference(history_df, ticker, score, input_tokens, output_tokens):
-    """Append a row to in-memory history + persist. Returns (new_df, call_cost_usd)."""
+def _append_inference(history_df, ticker, score, input_tokens, output_tokens,
+                      last_price=None, last_spike=None):
+    """Append a row to in-memory history + persist. Returns (new_df, call_cost_usd).
+    last_price / last_spike snapshot the market state at analysis time so the next
+    cycle's change-based eligibility can tell whether anything material has moved."""
     cost = (
         (input_tokens  / 1_000_000) * OPENAI_INPUT_PRICE_PER_MTOK +
         (output_tokens / 1_000_000) * OPENAI_OUTPUT_PRICE_PER_MTOK
@@ -194,6 +239,8 @@ def _append_inference(history_df, ticker, score, input_tokens, output_tokens):
         "ticker":        ticker,
         "analyzed_at":   datetime.now(timezone.utc).isoformat(),
         "score":         float(score),
+        "last_price":    float(last_price) if last_price is not None else None,
+        "last_spike":    float(last_spike) if last_spike is not None else None,
         "input_tokens":  int(input_tokens),
         "output_tokens": int(output_tokens),
         "cost_usd":      round(cost, 6),
@@ -376,7 +423,8 @@ def main():
     print("=" * 60)
     print(" PredictIQ Predictive Scanner: Delayed Reaction Detection")
     print(f" Model: {OPENAI_MODEL}  |  Candidate limit: {CANDIDATE_LIMIT}")
-    print(f" Cooldown: {COOLDOWN_HOURS}h or score delta >= {COOLDOWN_SCORE_DELTA}  |  Budget: ${BUDGET_GUARD_USD}/day")
+    print(f" Re-eligible on: price move >= {PRICE_DELTA} or spike >= {SPIKE_FACTOR}x "
+          f"(ceiling {MAX_SUPPRESS_HOURS}h, floor {MIN_RECHECK_MINUTES}m)  |  Budget: ${BUDGET_GUARD_USD}/day")
     print("=" * 60)
 
     if not os.getenv("OPENAI_API_KEY"):
@@ -386,7 +434,15 @@ def main():
     con = duckdb.connect()
     con.execute("INSTALL delta; LOAD delta;")
 
-    candidates = get_predictive_candidates(con)
+    # Load history + held positions BEFORE candidate selection: history feeds the
+    # change-based eligibility gate, open_tickers feeds the monitor-only entry guard.
+    history_df   = _load_inference_history()
+    today_spent  = _today_spend(history_df)
+    open_tickers = _load_open_tickers()
+    print(f"[Predictive] Today's spend so far: ${today_spent:.4f} (cap: ${BUDGET_GUARD_USD})  |  "
+          f"holding {len(open_tickers)} position(s)")
+
+    candidates = get_predictive_candidates(con, history_df)
     if candidates.empty:
         print("[Predictive] No candidates found. Market is efficiently priced.")
         return
@@ -401,23 +457,15 @@ def main():
         print(f"[Predictive] ERROR: Chroma collections not ready: {e}")
         return
 
-    history_df  = _load_inference_history()
-    today_spent = _today_spend(history_df)
-    print(f"[Predictive] Today's spend so far: ${today_spent:.4f} (cap: ${BUDGET_GUARD_USD})")
-
     os.makedirs(GOLD_BRIEFS, exist_ok=True)
     current_time = datetime.now(timezone.utc)
-    written      = 0
-    skipped_cd   = 0
-    skipped_bg   = 0
+    written       = 0
+    skipped_held  = 0
+    skipped_bg    = 0
 
     for _, market in candidates.iterrows():
         ticker = market['ticker']
         score  = float(market['mispricing_score'])
-
-        if _should_skip_ticker(ticker, score, history_df):
-            skipped_cd += 1
-            continue
 
         if today_spent >= BUDGET_GUARD_USD:
             skipped_bg += 1
@@ -435,7 +483,8 @@ def main():
         context_docs = fetch_rag_context(active_collections, rag_query, market_time)
         if not context_docs:
             print(f"    > No RAG matches found. Adding to cooldown to prevent repeated burns.")
-            history_df, _ = _append_inference(history_df, ticker, score, 0, 0)
+            history_df, _ = _append_inference(history_df, ticker, score, 0, 0,
+                                              market['current_odds'], market['max_spike_multiplier'])
             continue
 
         # RAG quality gate: checks raw semantic similarity, not the time-decayed score.
@@ -445,7 +494,8 @@ def main():
         best_rag = max(d['semantic_score'] for d in context_docs)
         if best_rag < MIN_RAG_SCORE:
             print(f"    > RAG quality too low ({best_rag:.2f} < {MIN_RAG_SCORE}) — no signal, adding to cooldown.")
-            history_df, _ = _append_inference(history_df, ticker, score, 0, 0)
+            history_df, _ = _append_inference(history_df, ticker, score, 0, 0,
+                                              market['current_odds'], market['max_spike_multiplier'])
             continue
 
         print(f"    > Synthesizing {len(context_docs)} signals (best RAG: {best_rag:.2f})...")
@@ -455,7 +505,8 @@ def main():
             continue  # transient error / rate limit — next cycle retries
 
         # Record the call regardless of edge gate — we paid for it.
-        history_df, call_cost = _append_inference(history_df, ticker, score, in_tok, out_tok)
+        history_df, call_cost = _append_inference(history_df, ticker, score, in_tok, out_tok,
+                                                  market['current_odds'], market['max_spike_multiplier'])
         today_spent += call_cost
 
         rag_score      = max([d['score'] for d in context_docs])
@@ -520,6 +571,14 @@ def main():
             written += 1
             continue  # brief is already written to parquet; no position, no Telegram
 
+        # Monitor-only (Option A): if we already hold this ticker, keep the fresh brief so
+        # exit_evaluator's thesis-flip can act on it, but never open a SECOND entry.
+        if ticker in open_tickers:
+            print(f"    > Already holding {ticker} — brief kept for exit logic; skipping new entry.")
+            skipped_held += 1
+            written += 1
+            continue
+
         kelly_sized = calculate_kelly(confidence, entry_price, PAPER_BANKROLL)
         qty = int(kelly_sized["suggested_bet_usd"] / entry_price) if entry_price > 0 else 0
         if qty > 0:
@@ -544,7 +603,7 @@ def main():
 
     print(
         f"\n[Predictive] Done. {written} brief(s) written | "
-        f"{skipped_cd} skipped (cooldown) | {skipped_bg} skipped (budget) | "
+        f"{skipped_held} held (monitor-only) | {skipped_bg} skipped (budget) | "
         f"spend today: ${today_spent:.4f}"
     )
 

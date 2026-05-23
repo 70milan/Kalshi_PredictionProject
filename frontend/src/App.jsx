@@ -162,6 +162,19 @@ export default function App() {
     } catch (_) { }
   }, []);
 
+  const closePosition = useCallback(async (ticker) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/paper/positions/${encodeURIComponent(ticker)}/close`, { method: 'POST' });
+      if (!res.ok) throw new Error((await res.json()).detail ?? res.statusText);
+      showToast({ type: 'success', message: `Closed ${ticker}` });
+      // Optimistic update: flip status immediately so user sees CLOSED without waiting for the next poll
+      setPaperPositions(prev => prev.map(p => p.ticker === ticker ? { ...p, status: 'CLOSED' } : p));
+      fetchPaperPositions();
+    } catch (e) {
+      showToast({ type: 'error', message: `Close failed: ${e.message}` });
+    }
+  }, [fetchPaperPositions]);
+
   const fetchPositionBacktest = useCallback(async (
     currentOnly = backtestCurrentOnly,
     tpPct = tpInput,
@@ -368,6 +381,7 @@ export default function App() {
                     SL_HIT:       { label: 'SL HIT',   color: 'var(--red)' },
                     SETTLED_WIN:  { label: 'WIN',       color: 'var(--green)' },
                     SETTLED_LOSS: { label: 'LOSS',      color: 'var(--red)' },
+                    CLOSED:       { label: 'CLOSED',    color: 'var(--text-muted)' },
                   };
                   const posGetters = {
                     entered_at:     p => p.entered_at ?? '',
@@ -429,6 +443,7 @@ export default function App() {
                           { label: 'Winning',   value: winning,                                                         color: 'var(--green)' },
                           { label: 'Losing',    value: losing,                                                          color: 'var(--red)' },
                           { label: 'Open',      value: openCount,                                                       color: 'var(--blue)' },
+                          { label: 'Closed',    value: paperSummary?.closed ?? 0,                                       color: 'var(--text-muted)' },
                           { label: 'Win Rate',  value: winRate != null ? `${(winRate * 100).toFixed(0)}%` : 'N/A',     color: winRate >= 0.55 ? 'var(--green)' : winRate != null ? 'var(--red)' : 'var(--text-muted)' },
                           { label: 'Total P&L', value: `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}`,          color: totalPnl >= 0 ? 'var(--green)' : 'var(--red)', sub: `${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%` },
                           { label: 'Invested',  value: `$${totalInvested.toFixed(2)}`,                                 color: 'var(--text-secondary)' },
@@ -459,6 +474,7 @@ export default function App() {
                               <th onClick={() => onP('unrealized_pnl')} style={thP('right')}>P&amp;L{pi('unrealized_pnl')}</th>
                               <th onClick={() => onP('won')}           style={thP('right')}>Won{pi('won')}</th>
                               <th onClick={() => onP('lost')}          style={thP('right')}>Lost{pi('lost')}</th>
+                              <th style={{ width: '28px' }}></th>
                             </tr>
                             <tr style={{ borderBottom: '1px solid var(--border)' }}>
                               {POS_COLS.map(col => (
@@ -472,16 +488,20 @@ export default function App() {
                                   />
                                 </th>
                               ))}
+                              <th></th>
                             </tr>
                           </thead>
                           <tbody>
                             {rows.map((p, i) => {
-                              const meta     = STATUS_META[p.status] ?? { label: p.status, color: 'var(--text-muted)' };
-                              const pnlColor = (p.unrealized_pnl ?? 0) >= 0 ? 'var(--green)' : 'var(--red)';
-                              const invested = p.cost_basis ?? 0;
+                              const meta      = STATUS_META[p.status] ?? { label: p.status, color: 'var(--text-muted)' };
+                              const isClosed  = p.status === 'CLOSED';
+                              const dimmed    = isClosed ? 0.65 : 1;
+                              const pnlColor  = (p.unrealized_pnl ?? 0) >= 0 ? 'var(--green)' : 'var(--red)';
+                              const invested  = p.cost_basis ?? 0;
                               const rowPnlPct = invested > 0 && p.unrealized_pnl != null ? (p.unrealized_pnl / invested) * 100 : null;
+                              const canClose  = !isClosed && p.status !== 'SETTLED_WIN' && p.status !== 'SETTLED_LOSS';
                               return (
-                                <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
+                                <tr key={i} style={{ borderBottom: '1px solid var(--border)', opacity: dimmed }}>
                                   <td style={{ padding: '5px 8px', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{p.entered_at ?? '—'}</td>
                                   <td style={{ padding: '5px 8px', maxWidth: '220px' }}>
                                     <div style={{ fontWeight: 600, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={p.title || p.ticker}>{p.ticker}</div>
@@ -508,6 +528,17 @@ export default function App() {
                                   </td>
                                   <td style={{ padding: '5px 8px', textAlign: 'right', fontWeight: 600, color: 'var(--red)' }}>
                                     {(p.unrealized_pnl ?? 0) < 0 ? `$${Math.abs(p.unrealized_pnl).toFixed(2)}` : '—'}
+                                  </td>
+                                  <td style={{ padding: '5px 8px', textAlign: 'center', width: '28px' }}>
+                                    {canClose && (
+                                      <span
+                                        onClick={() => closePosition(p.ticker)}
+                                        title="Close position"
+                                        style={{ cursor: 'pointer', color: 'var(--text-muted)', fontSize: '0.9rem', lineHeight: 1, padding: '2px 4px', borderRadius: '3px', transition: 'color 0.15s, opacity 0.15s', userSelect: 'none' }}
+                                        onMouseEnter={e => { e.currentTarget.style.color = 'var(--red)'; e.currentTarget.style.opacity = '1'; }}
+                                        onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)'; e.currentTarget.style.opacity = '0.6'; }}
+                                      >×</span>
+                                    )}
                                   </td>
                                 </tr>
                               );
