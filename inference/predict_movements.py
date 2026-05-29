@@ -67,7 +67,7 @@ MIN_RECHECK_MINUTES  = float(os.getenv("INFERENCE_MIN_RECHECK_MIN",    "15"))
 # out: skip contracts resolving too soon (spread friction too high, news already priced in,
 # imminent binary settlement) and ones too far out (a news spike today is noise against a
 # multi-year horizon). Markets outside this window never reach the LLM.
-MIN_DAYS_TO_CLOSE    = float(os.getenv("INFERENCE_MIN_DAYS_TO_CLOSE", "30"))
+MIN_DAYS_TO_CLOSE    = float(os.getenv("INFERENCE_MIN_DAYS_TO_CLOSE", "60"))
 MAX_DAYS_TO_CLOSE    = float(os.getenv("INFERENCE_MAX_DAYS_TO_CLOSE", "365"))
 
 # gpt-4o-mini list price (USD per 1M tokens). Override via env if it changes.
@@ -97,8 +97,8 @@ def _get_query_embedding(collection_name: str, text: str):
 SERIES_LIMIT = int(os.getenv("SERIES_LIMIT", "3"))  # max candidates per ticker series
 
 
-def get_predictive_candidates(con, history_df, min_score=80.0):
-    print(f"[Predictive] Scanning Gold Mispricing Ledger for scores >= {min_score} "
+def get_predictive_candidates(con, history_df):
+    print(f"[Predictive] Scanning Gold Mispricing Ledger for flagged candidates "
           f"(limit={CANDIDATE_LIMIT}, max {SERIES_LIMIT} per series, "
           f"expiry {MIN_DAYS_TO_CLOSE:.0f}-{MAX_DAYS_TO_CLOSE:.0f}d)...")
     bronze_latest = BRONZE_LATEST.replace("\\", "/")
@@ -131,7 +131,7 @@ def get_predictive_candidates(con, history_df, min_score=80.0):
             SELECT ticker, TRY_CAST(close_time AS TIMESTAMPTZ) AS close_ts
             FROM read_parquet('{bronze_latest}')
         ) b ON g.ticker = b.ticker
-        WHERE g.mispricing_score >= 80
+        WHERE g.flagged_candidate = TRUE
           AND TRY_CAST(g.ingested_at AS TIMESTAMPTZ) >= CURRENT_TIMESTAMP - INTERVAL '48 hours'
           AND g.yes_bid BETWEEN 0.25 AND 0.75
           AND b.close_ts IS NOT NULL                                                          -- market still open
@@ -597,16 +597,12 @@ def main():
             written += 1
             continue
 
-        kelly_sized = calculate_kelly(confidence, entry_price, PAPER_BANKROLL)
-        qty = int(kelly_sized["suggested_bet_usd"] / entry_price) if entry_price > 0 else 0
-        if qty > 0:
-            file_exists = os.path.isfile(SIMULATED_TRADES_PATH)
-            with open(SIMULATED_TRADES_PATH, "a", encoding="utf-8") as f:
-                if not file_exists:
-                    f.write("timestamp,ticker,side,count,price_dollars,total_risk_usd\n")
-                risk = round(qty * entry_price, 2)
-                f.write(f"{current_time.isoformat()},{ticker},{recommended},{qty},{entry_price:.4f},{risk:.2f}\n")
-            print(f"    [PAPER TRADE] {qty}x {ticker} {recommended.upper()} @ {entry_price:.4f}  risk=${qty*entry_price:.2f}")
+        # Auto paper-trade to simulated_trades.csv is DISABLED. That CSV cohort (v1) is
+        # FROZEN as the baseline — let it settle untouched, no new entries. New trading
+        # runs in the V2 demo-sim arms: llm_trader.py reads these briefs for the LLM arm,
+        # sentiment_trader.py uses the Gold sentiment signal, both placing limit orders via
+        # paper_executor_v2 against real bid/ask. Briefs + Telegram alerts still fire below.
+        open_tickers.add(ticker)
 
         display_odds = current_odds if recommended == "yes" else (1.0 - current_odds)
         notify_brief(

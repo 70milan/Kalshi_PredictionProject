@@ -261,7 +261,7 @@ def generate_mispricing_scores(spark, kalshi_history_path, gdelt_summaries_path,
     # so the existing downstream "score >= 80" gate selects the validated top slice with no
     # code change. Only the extreme tail (raw_v2 > ~1300) pins at 100. Anchor is env-tunable.
     import math
-    V2_TOP5_ANCHOR = float(os.getenv("MISPRICING_V2_ANCHOR", "9.0"))  # raw_v2 p95
+    V2_TOP5_ANCHOR = float(os.getenv("MISPRICING_V2_ANCHOR", "306.0"))  # raw_v2 p95
     ln_anchor      = math.log1p(V2_TOP5_ANCHOR)
 
     raw_v2 = (
@@ -288,7 +288,7 @@ def generate_mispricing_scores(spark, kalshi_history_path, gdelt_summaries_path,
     # Flag candidates > 80
     df_final = df_final.withColumn(
         "flagged_candidate",
-        (F.col("mispricing_score") > 80.0)
+        (F.col("mispricing_score") > 65.0)
     ).withColumn(
         "llm_brief", F.lit(None).cast("string")
     )

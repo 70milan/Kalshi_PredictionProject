@@ -44,6 +44,7 @@ BRONZE_LATEST_PATH    = os.path.join(PROJECT_ROOT, "data", "bronze", "kalshi_mar
 BRONZE_MARKETS_DIR    = os.path.join(PROJECT_ROOT, "data", "bronze", "kalshi_markets", "open")
 EXIT_SIGNALS_PATH     = os.path.join(PROJECT_ROOT, "data", "gold", "exit_signals")
 LEDGER_PATH           = os.path.join(PROJECT_ROOT, "data", "gold", "position_ledger.parquet")
+PAPER_ORDERS_V2_PATH  = os.path.join(PROJECT_ROOT, "data", "gold", "paper_orders_v2.parquet")
 SETTLED_MARKETS_DIR   = os.path.join(PROJECT_ROOT, "data", "bronze", "kalshi_markets", "settled")
 _KALSHI_LIVE_URL      = "https://api.elections.kalshi.com/trade-api/v2"
 _KALSHI_DEMO_URL      = "https://demo-api.kalshi.co/trade-api/v2"
@@ -755,14 +756,16 @@ def get_paper_positions():
         try:
             con = duckdb.connect()
             latest = con.execute(f"""
-                SELECT ticker, yes_bid_dollars, yes_ask_dollars
+                SELECT ticker, yes_bid_dollars, yes_ask_dollars, close_time
                 FROM read_parquet('{BRONZE_LATEST_PATH.replace(chr(92), "/")}')
             """).df()
             con.close()
             for _, row in latest.iterrows():
+                ct = row["close_time"]
                 price_map[row["ticker"]] = {
                     "yes_bid": float(row["yes_bid_dollars"]),
                     "yes_ask": float(row["yes_ask_dollars"]),
+                    "close_time": str(ct)[:10] if ct is not None and not pd.isna(ct) else None,
                 }
         except Exception:
             pass
@@ -850,6 +853,7 @@ def get_paper_positions():
             "roi_pct":        roi_pct,
             "status":         status,
             "entered_at":     ts,
+            "expires_at":     price_map.get(ticker, {}).get("close_time"),
         })
 
     STATUS_ORDER = {"SL_HIT": 0, "CLOSED": 1, "TP_READY": 2, "OPEN": 3, "SETTLED_WIN": 4, "SETTLED_LOSS": 5}
@@ -885,6 +889,173 @@ def close_paper_position(ticker: str):
     df.loc[mask, "closed_at"] = datetime.now(timezone.utc).isoformat()
     df.to_csv(SIMULATED_TRADES_PATH, index=False)
     return {"closed": ticker, "rows": int(mask.sum())}
+
+
+@app.get("/api/paper/v2/positions")
+def get_paper_v2_positions():
+    """
+    V2 paper arms (sentiment + LLM) from data/gold/paper_orders_v2.parquet.
+    Limit fills are simulated against real bid/ask; open positions marked at the
+    side BID (honest exit value); closed positions carry the recorded $0/$1 payoff.
+    Returns one block per arm, shaped like /api/paper/positions for table reuse.
+    """
+    empty = {"positions": [], "summary": {"trades": 0, "open": 0, "resting": 0,
+             "settled_win": 0, "settled_loss": 0, "expired": 0,
+             "unrealized_pnl": 0, "realized_pnl": 0, "invested": 0, "win_rate": None}}
+    if not os.path.exists(PAPER_ORDERS_V2_PATH):
+        return {"arms": {"sentiment": dict(empty), "llm": dict(empty)},
+                "as_of": datetime.now(timezone.utc).isoformat()}
+    try:
+        orders = pd.read_parquet(PAPER_ORDERS_V2_PATH)
+    except Exception:
+        return {"arms": {"sentiment": dict(empty), "llm": dict(empty)},
+                "as_of": datetime.now(timezone.utc).isoformat()}
+    if orders.empty:
+        return {"arms": {"sentiment": dict(empty), "llm": dict(empty)},
+                "as_of": datetime.now(timezone.utc).isoformat()}
+
+    # Live prices for marking open positions
+    price_map = {}
+    if os.path.exists(BRONZE_LATEST_PATH):
+        try:
+            con = duckdb.connect()
+            latest = con.execute(f"""
+                SELECT ticker, yes_bid_dollars, yes_ask_dollars, close_time
+                FROM read_parquet('{BRONZE_LATEST_PATH.replace(chr(92), "/")}')
+            """).df()
+            con.close()
+            for _, row in latest.iterrows():
+                ct = row["close_time"]
+                price_map[row["ticker"]] = {
+                    "yes_bid": float(row["yes_bid_dollars"]),
+                    "yes_ask": float(row["yes_ask_dollars"]),
+                    "close_time": str(ct)[:10] if ct is not None and not pd.isna(ct) else None,
+                }
+        except Exception:
+            pass
+
+    title_map = _get_titles_from_history(orders["ticker"].astype(str).unique().tolist())
+
+    def _side_bid(side, yb, ya):
+        return yb if side == "yes" else (1.0 - ya)
+
+    def _build(arm_df):
+        positions = []
+        unreal = realized = invested = 0.0
+        for _, o in arm_df.iterrows():
+            ticker = str(o["ticker"]); side = str(o["side"]); qty = int(o["count"])
+            st = str(o["status"])
+            limit_price  = float(o["limit_price"])
+            filled_price = float(o["filled_price"]) if pd.notna(o.get("filled_price")) else None
+            entry        = filled_price if filled_price is not None else limit_price
+            current = pnl = None
+            disp = st.upper()
+            if st == "resting":
+                disp = "RESTING"
+                px = price_map.get(ticker)
+                current = _side_bid(side, px["yes_bid"], px["yes_ask"]) if px else None
+            elif st == "filled":
+                disp = "OPEN"
+                px = price_map.get(ticker)
+                if px is not None and filled_price is not None:
+                    current = _side_bid(side, px["yes_bid"], px["yes_ask"])
+                    pnl = round((current - filled_price) * qty, 2)
+                    unreal += pnl
+                    invested += filled_price * qty
+            elif st == "closed":
+                cp = float(o["close_price"]) if pd.notna(o.get("close_price")) else 0.0
+                reason = str(o.get("close_reason") or "")
+                disp = "SETTLED_WIN" if "win" in reason else ("SETTLED_LOSS" if "loss" in reason else "CLOSED")
+                current = cp
+                if filled_price is not None:
+                    pnl = round((cp - filled_price) * qty, 2)
+                    realized += pnl
+                    invested += filled_price * qty
+            elif st == "expired":
+                disp = "EXPIRED"
+            entered = str(o.get("filled_at") or o.get("created_at") or "")[:10]
+            positions.append({
+                "order_id": str(o.get("order_id") or ""),
+                "ticker": ticker, "title": title_map.get(ticker, ticker), "side": side,
+                "qty": qty, "entry_price": round(entry, 4),
+                "current_price": round(current, 4) if current is not None else None,
+                "cost_basis": round(entry * qty, 2),
+                "unrealized_pnl": pnl,
+                "roi_pct": round((current - entry) / entry * 100, 1) if (current is not None and entry > 0) else None,
+                "status": disp, "entered_at": entered,
+                "expires_at": price_map.get(ticker, {}).get("close_time"),
+            })
+        ORDER = {"OPEN": 0, "RESTING": 1, "SETTLED_LOSS": 2, "SETTLED_WIN": 3, "EXPIRED": 4}
+        positions.sort(key=lambda p: (ORDER.get(p["status"], 9), -(p.get("unrealized_pnl") or 0)))
+        wins = sum(1 for p in positions if p["status"] == "SETTLED_WIN")
+        losses = sum(1 for p in positions if p["status"] == "SETTLED_LOSS")
+        return {
+            "positions": positions,
+            "summary": {
+                "trades":       sum(1 for p in positions if p["status"] in ("OPEN", "SETTLED_WIN", "SETTLED_LOSS")),
+                "open":         sum(1 for p in positions if p["status"] == "OPEN"),
+                "resting":      sum(1 for p in positions if p["status"] == "RESTING"),
+                "settled_win":  wins,
+                "settled_loss": losses,
+                "expired":      sum(1 for p in positions if p["status"] == "EXPIRED"),
+                "unrealized_pnl": round(unreal, 2),
+                "realized_pnl":   round(realized, 2),
+                "invested":       round(invested, 2),
+                "win_rate":       round(wins / (wins + losses), 3) if (wins + losses) > 0 else None,
+            }
+        }
+
+    arms = {}
+    for arm in ("sentiment", "llm"):
+        arms[arm] = _build(orders[orders["arm"] == arm])
+    return {"arms": arms, "as_of": datetime.now(timezone.utc).isoformat()}
+
+
+@app.post("/api/paper/v2/orders/{order_id}/close")
+def close_v2_paper_order(order_id: str):
+    """Cancel a RESTING V2 order or close a FILLED V2 position manually.
+    RESTING → status=expired, close_reason=manual_cancel (no P&L; no money invested).
+    FILLED  → status=closed, close_price=current side-bid, close_reason=manual_close."""
+    if not os.path.exists(PAPER_ORDERS_V2_PATH):
+        raise HTTPException(status_code=404, detail="No V2 orders file found")
+    df = pd.read_parquet(PAPER_ORDERS_V2_PATH)
+    mask = df["order_id"].astype(str) == str(order_id)
+    if not mask.any():
+        raise HTTPException(status_code=404, detail=f"Order {order_id} not found")
+    idx = df[mask].index[0]
+    status = str(df.at[idx, "status"])
+    if status not in ("resting", "filled"):
+        raise HTTPException(status_code=400, detail=f"Cannot close order in status: {status}")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    if status == "resting":
+        df.at[idx, "status"] = "expired"
+        df.at[idx, "close_reason"] = "manual_cancel"
+        df.at[idx, "closed_at"] = now_iso
+        new_status = "expired"
+    else:  # filled
+        ticker = str(df.at[idx, "ticker"]); side = str(df.at[idx, "side"])
+        close_price = 0.0
+        if os.path.exists(BRONZE_LATEST_PATH):
+            try:
+                con = duckdb.connect()
+                row = con.execute(f"""
+                    SELECT yes_bid_dollars, yes_ask_dollars
+                    FROM read_parquet('{BRONZE_LATEST_PATH.replace(chr(92), "/")}')
+                    WHERE ticker = ?
+                """, [ticker]).fetchone()
+                con.close()
+                if row is not None:
+                    yb = float(row[0]); ya = float(row[1])
+                    close_price = yb if side == "yes" else (1.0 - ya)
+            except Exception:
+                pass
+        df.at[idx, "status"] = "closed"
+        df.at[idx, "close_price"] = round(close_price, 4)
+        df.at[idx, "close_reason"] = "manual_close"
+        df.at[idx, "closed_at"] = now_iso
+        new_status = "closed"
+    df.to_parquet(PAPER_ORDERS_V2_PATH, index=False)
+    return {"order_id": order_id, "new_status": new_status}
 
 
 @app.get("/api/portfolio/fills")

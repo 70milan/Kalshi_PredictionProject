@@ -33,6 +33,9 @@ export default function App() {
   const [paperPositions, setPaperPositions] = useState([]);
   const [paperSummary, setPaperSummary] = useState(null);
   const [showPositions, setShowPositions] = useState(false);
+  const [showV2, setShowV2] = useState(false);
+  const [v2Cohort, setV2Cohort] = useState('sentiment');
+  const [v2Data, setV2Data] = useState(null);
   const [showExits, setShowExits] = useState(false);
   const [exitSignals, setExitSignals] = useState([]);
   const [actionableExits, setActionableExits] = useState(0);
@@ -162,6 +165,35 @@ export default function App() {
     } catch (_) { }
   }, []);
 
+  const fetchV2Positions = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/paper/v2/positions`);
+      if (!res.ok) return;
+      const data = await res.json();
+      setV2Data(data ?? null);
+    } catch (_) { }
+  }, []);
+
+  const closeV2Order = useCallback(async (orderId, label) => {
+    if (!orderId) {
+      showToast({ type: 'warning', message: 'No order_id on row — refresh and retry' });
+      return;
+    }
+    try {
+      const res = await fetch(`${API_BASE}/api/paper/v2/orders/${encodeURIComponent(orderId)}/close`, { method: 'POST' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      const verb = data.new_status === 'expired' ? 'Cancelled' : 'Closed';
+      showToast({ type: 'success', message: `${verb} ${label || orderId.slice(0, 8)}` });
+      fetchV2Positions();
+    } catch (e) {
+      showToast({ type: 'error', message: `Close failed: ${e.message}` });
+    }
+  }, [fetchV2Positions]);
+
   const closePosition = useCallback(async (ticker) => {
     try {
       const res = await fetch(`${API_BASE}/api/paper/positions/${encodeURIComponent(ticker)}/close`, { method: 'POST' });
@@ -229,14 +261,16 @@ export default function App() {
     fetchOrders();
     fetchExits();
     fetchPaperPositions();
+    fetchV2Positions();
     const interval = setInterval(() => {
       fetchIntelligence();
       fetchOrders();
       fetchExits();
       fetchPaperPositions();
+      fetchV2Positions();
     }, POLL_MS);
     return () => clearInterval(interval);
-  }, [fetchIntelligence, fetchOrders, fetchExits, fetchPaperPositions]);
+  }, [fetchIntelligence, fetchOrders, fetchExits, fetchPaperPositions, fetchV2Positions]);
 
   // Auto-refresh backtest while modal is open (every 2 min)
   useEffect(() => {
@@ -330,6 +364,18 @@ export default function App() {
             )}
           </button>
 
+          {/* V2 ARMS BUTTON */}
+          <button
+            className="positions-header-btn"
+            onClick={() => setShowV2(v => !v)}
+          >
+            V2 Arms
+            {(() => {
+              const n = (v2Data?.arms?.sentiment?.positions?.length ?? 0) + (v2Data?.arms?.llm?.positions?.length ?? 0);
+              return n > 0 ? <span className="positions-badge">{n}</span> : null;
+            })()}
+          </button>
+
           {lastPoll && (
             <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
               Polled {lastPoll.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
@@ -385,6 +431,7 @@ export default function App() {
                   };
                   const posGetters = {
                     entered_at:     p => p.entered_at ?? '',
+                    expires_at:     p => p.expires_at ?? '',
                     ticker:         p => p.ticker ?? '',
                     side:           p => p.side ?? '',
                     entry_price:    p => p.entry_price ?? 0,
@@ -396,7 +443,7 @@ export default function App() {
                     won:            p => Math.max(0, p.unrealized_pnl ?? 0),
                     lost:           p => Math.max(0, -(p.unrealized_pnl ?? 0)),
                   };
-                  const POS_COLS = ['entered_at','ticker','side','entry_price','qty','cost_basis','status','current_price','unrealized_pnl','won','lost'];
+                  const POS_COLS = ['entered_at','expires_at','ticker','side','entry_price','qty','cost_basis','status','current_price','unrealized_pnl','won','lost'];
 
                   // Filter + sort
                   let rows = paperPositions;
@@ -464,6 +511,7 @@ export default function App() {
                           <thead>
                             <tr style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-muted)', fontSize: '0.58rem', textTransform: 'uppercase' }}>
                               <th onClick={() => onP('entered_at')}    style={thP('left')}>Entry{pi('entered_at')}</th>
+                              <th onClick={() => onP('expires_at')}    style={thP('left')}>Expires{pi('expires_at')}</th>
                               <th onClick={() => onP('ticker')}        style={thP('left')}>Market{pi('ticker')}</th>
                               <th onClick={() => onP('side')}          style={thP('center')}>Side{pi('side')}</th>
                               <th onClick={() => onP('entry_price')}   style={thP('center')}>Buy{pi('entry_price')}</th>
@@ -503,6 +551,7 @@ export default function App() {
                               return (
                                 <tr key={i} style={{ borderBottom: '1px solid var(--border)', opacity: dimmed }}>
                                   <td style={{ padding: '5px 8px', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{p.entered_at ?? '—'}</td>
+                                  <td style={{ padding: '5px 8px', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{p.expires_at ?? '—'}</td>
                                   <td style={{ padding: '5px 8px', maxWidth: '220px' }}>
                                     <div style={{ fontWeight: 600, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={p.title || p.ticker}>{p.ticker}</div>
                                     {p.title && p.title !== p.ticker && <div style={{ fontSize: '0.58rem', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.title}</div>}
@@ -617,6 +666,136 @@ export default function App() {
                     })}
                   </div>
                 );
+              })()}
+            </div>
+            </div>{/* end modal-body */}
+          </div>
+        </div>
+      )}
+
+      {/* V2 ARMS OVERLAY */}
+      {showV2 && (
+        <div className="modal-backdrop" onClick={() => setShowV2(false)}>
+          <div className="modal-card" style={{ maxWidth: '1100px' }} onClick={e => e.stopPropagation()}>
+            <div className="modal-close-bar">
+              <button className="modal-close" onClick={() => setShowV2(false)}>×</button>
+            </div>
+            <div className="modal-body">
+            <div style={{ padding: '0.5rem 1.5rem 0.5rem' }}>
+              <div className="section-heading" style={{ marginBottom: '0.5rem' }}>
+                V2 Paper Arms — Sentiment vs LLM
+              </div>
+              <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>
+                Same V2 candidate selection + same limit execution; the only difference is the direction source.
+                Limit fills are simulated against real bid/ask (open positions marked at the bid).
+              </div>
+              {/* SUB-TAB BAR */}
+              <div style={{ display: 'flex', gap: 0, marginBottom: '1rem', borderBottom: '1px solid var(--border)' }}>
+                {[['sentiment', 'Sentiment'], ['llm', 'LLM']].map(([key, label]) => {
+                  const cnt = v2Data?.arms?.[key]?.positions?.length ?? 0;
+                  const on = v2Cohort === key;
+                  return (
+                    <button key={key} onClick={() => setV2Cohort(key)}
+                      style={{ background: 'none', border: 'none',
+                        borderBottom: on ? '2px solid var(--blue)' : '2px solid transparent',
+                        color: on ? 'var(--text-primary)' : 'var(--text-muted)',
+                        padding: '0.5rem 1.25rem', cursor: 'pointer', fontWeight: on ? 700 : 500, fontSize: '0.85rem' }}>
+                      {label} ({cnt})
+                    </button>
+                  );
+                })}
+              </div>
+              {(() => {
+                const arm = v2Data?.arms?.[v2Cohort];
+                const positions = arm?.positions ?? [];
+                const s = arm?.summary;
+                if (!positions.length) {
+                  return <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', padding: '1rem 0' }}>
+                    No {v2Cohort} positions yet. The V2 arms place limit orders each ETL cycle (fills require the real market to reach the mid).
+                  </div>;
+                }
+                const STATUS_META = {
+                  OPEN: { label: 'OPEN', color: 'var(--blue)' },
+                  RESTING: { label: 'RESTING', color: 'var(--amber)' },
+                  SETTLED_WIN: { label: 'WIN', color: 'var(--green)' },
+                  SETTLED_LOSS: { label: 'LOSS', color: 'var(--red)' },
+                  EXPIRED: { label: 'EXPIRED', color: 'var(--text-muted)' },
+                };
+                return (<>
+                  <div style={{ display: 'flex', gap: '1.5rem', marginBottom: '1.25rem', flexWrap: 'wrap' }}>
+                    {[
+                      { label: 'Orders', value: positions.length, color: 'var(--text-primary)' },
+                      { label: 'Open', value: s?.open ?? 0, color: 'var(--blue)' },
+                      { label: 'Resting', value: s?.resting ?? 0, color: 'var(--amber)' },
+                      { label: 'Won', value: s?.settled_win ?? 0, color: 'var(--green)' },
+                      { label: 'Lost', value: s?.settled_loss ?? 0, color: 'var(--red)' },
+                      { label: 'Win Rate', value: s?.win_rate != null ? `${(s.win_rate * 100).toFixed(0)}%` : 'N/A', color: (s?.win_rate ?? 0) >= 0.55 ? 'var(--green)' : 'var(--text-muted)' },
+                      { label: 'Unrealized', value: `${(s?.unrealized_pnl ?? 0) >= 0 ? '+' : ''}$${(s?.unrealized_pnl ?? 0).toFixed(2)}`, color: (s?.unrealized_pnl ?? 0) >= 0 ? 'var(--green)' : 'var(--red)' },
+                      { label: 'Realized', value: `${(s?.realized_pnl ?? 0) >= 0 ? '+' : ''}$${(s?.realized_pnl ?? 0).toFixed(2)}`, color: (s?.realized_pnl ?? 0) >= 0 ? 'var(--green)' : 'var(--red)' },
+                      { label: 'Invested', value: `$${(s?.invested ?? 0).toFixed(2)}`, color: 'var(--text-secondary)' },
+                    ].map(({ label, value, color }) => (
+                      <div key={label} style={{ minWidth: '70px' }}>
+                        <div style={{ fontSize: '0.58rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '2px' }}>{label}</div>
+                        <div style={{ fontSize: '1.05rem', fontWeight: 700, color, fontFamily: 'JetBrains Mono, monospace' }}>{value}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.68rem', fontFamily: 'JetBrains Mono, monospace' }}>
+                      <thead>
+                        <tr style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-muted)', fontSize: '0.58rem', textTransform: 'uppercase' }}>
+                          <th style={{ textAlign: 'left', padding: '6px 8px' }}>Entry</th>
+                          <th style={{ textAlign: 'left', padding: '6px 8px' }}>Expires</th>
+                          <th style={{ textAlign: 'left', padding: '6px 8px' }}>Market</th>
+                          <th style={{ textAlign: 'center', padding: '6px 8px' }}>Side</th>
+                          <th style={{ textAlign: 'center', padding: '6px 8px' }}>Buy</th>
+                          <th style={{ textAlign: 'center', padding: '6px 8px' }}>Qty</th>
+                          <th style={{ textAlign: 'center', padding: '6px 8px' }}>Invested</th>
+                          <th style={{ textAlign: 'center', padding: '6px 8px' }}>Status</th>
+                          <th style={{ textAlign: 'center', padding: '6px 8px' }}>Current</th>
+                          <th style={{ textAlign: 'right', padding: '6px 8px' }}>P&amp;L</th>
+                          <th style={{ width: '28px' }}></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {positions.map((p, i) => {
+                          const meta = STATUS_META[p.status] ?? { label: p.status, color: 'var(--text-muted)' };
+                          const pnlColor = (p.unrealized_pnl ?? 0) >= 0 ? 'var(--green)' : 'var(--red)';
+                          const canClose = p.status === 'RESTING' || p.status === 'OPEN';
+                          const closeTitle = p.status === 'RESTING' ? 'Cancel resting order' : 'Close position at current bid';
+                          return (
+                            <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
+                              <td style={{ padding: '5px 8px', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{p.entered_at ?? '—'}</td>
+                              <td style={{ padding: '5px 8px', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{p.expires_at ?? '—'}</td>
+                              <td style={{ padding: '5px 8px', maxWidth: '260px' }}>
+                                <div style={{ fontWeight: 600, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={p.title || p.ticker}>{p.ticker}</div>
+                                {p.title && p.title !== p.ticker && <div style={{ fontSize: '0.58rem', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.title}</div>}
+                              </td>
+                              <td style={{ padding: '5px 8px', textAlign: 'center' }}><span style={{ color: p.side === 'yes' ? 'var(--green)' : 'var(--red)', fontWeight: 700 }}>{p.side?.toUpperCase()}</span></td>
+                              <td style={{ padding: '5px 8px', textAlign: 'center', color: 'var(--text-secondary)' }}>{Math.round((p.entry_price ?? 0) * 100)}¢</td>
+                              <td style={{ padding: '5px 8px', textAlign: 'center', color: 'var(--text-muted)' }}>{p.qty}</td>
+                              <td style={{ padding: '5px 8px', textAlign: 'center', color: 'var(--text-secondary)' }}>${(p.cost_basis ?? 0).toFixed(2)}</td>
+                              <td style={{ padding: '5px 8px', textAlign: 'center' }}><span style={{ color: meta.color, fontWeight: 700, fontSize: '0.62rem' }}>{meta.label}</span></td>
+                              <td style={{ padding: '5px 8px', textAlign: 'center', color: 'var(--text-secondary)' }}>{p.current_price != null ? `${Math.round(p.current_price * 100)}¢` : '—'}</td>
+                              <td style={{ padding: '5px 8px', textAlign: 'right', fontWeight: 700, color: pnlColor }}>{p.unrealized_pnl == null ? '—' : `${p.unrealized_pnl >= 0 ? '+' : ''}$${p.unrealized_pnl.toFixed(2)}`}</td>
+                              <td style={{ padding: '5px 8px', textAlign: 'center', width: '28px' }}>
+                                {canClose && (
+                                  <span
+                                    onClick={() => closeV2Order(p.order_id, p.ticker)}
+                                    title={closeTitle}
+                                    style={{ cursor: 'pointer', color: 'var(--text-muted)', fontSize: '0.9rem', lineHeight: 1, padding: '2px 4px', borderRadius: '3px', transition: 'color 0.15s, opacity 0.15s', userSelect: 'none' }}
+                                    onMouseEnter={e => { e.currentTarget.style.color = 'var(--red)'; e.currentTarget.style.opacity = '1'; }}
+                                    onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)'; e.currentTarget.style.opacity = '0.6'; }}
+                                  >×</span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </>);
               })()}
             </div>
             </div>{/* end modal-body */}

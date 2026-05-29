@@ -74,6 +74,9 @@ INFERENCE_SCRIPT = os.path.join(PROJECT_ROOT, "inference", "predict_movements.py
 LEDGER_SCRIPT = os.path.join(PROJECT_ROOT, "inference", "build_position_ledger.py")
 EXIT_SCRIPT   = os.path.join(PROJECT_ROOT, "inference", "exit_evaluator.py")
 
+# Phase 4c: V2 paper arms (sentiment + LLM) — demo-data limit-fill simulation
+PAPER_V2_SCRIPT = os.path.join(PROJECT_ROOT, "inference", "run_paper_v2.py")
+
 POLL_INTERVAL = 300   # 5 minutes AFTER the cycle completes (not a fixed cadence)
 
 
@@ -241,6 +244,13 @@ def run_etl_cycle():
     print("-" * 40)
     run_script(LEDGER_SCRIPT, timeout_seconds=120, phase="Phase 4b")
     run_script(EXIT_SCRIPT,   timeout_seconds=120, phase="Phase 4b")
+
+    # --- Phase 4c: V2 paper arms (sentiment + LLM), runs EVERY cycle like 4b ---
+    # Places mid limit orders for both arms and processes fills/settlements against
+    # real prod bid/ask (demo exchange has no liquidity, so fills are simulated honestly).
+    print("\n[Phase 4c] V2 Paper Arms (sentiment + LLM)")
+    print("-" * 40)
+    run_script(PAPER_V2_SCRIPT, timeout_seconds=180, phase="Phase 4c")
 
     # --- Phase 5: Daily Settlement (once per day, AFTER transforms) ---
     if should_run_daily_settlement():
