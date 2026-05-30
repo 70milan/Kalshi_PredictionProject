@@ -275,7 +275,7 @@ def run(spark):
     bronze_base    = os.path.join(ROOT, "data", "bronze", "gdelt", "gdelt_events")
     silver_history = os.path.join(ROOT, "data", "silver", "gdelt_events_history")
     silver_current = os.path.join(ROOT, "data", "silver", "gdelt_events_current")
-    reference_dir  = os.path.join(ROOT, "reference")
+    reference_dir  = os.path.join(ROOT, "data", "reference")
 
     # Step 1: Watermark
     watermark = get_watermark(spark, silver_history)
